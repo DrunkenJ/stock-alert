@@ -53,7 +53,7 @@ class SurgeDetector:
 
         # 거래량 상위 30개 가져오기
         try:
-            volume_top = kis_client.get_volume_ranking(limit=30)
+            volume_top = kis_client.get_volume_ranking(top_n=30)
         except Exception as e:
             logger.debug(f"거래량 조회 실패: {e}")
             return []
