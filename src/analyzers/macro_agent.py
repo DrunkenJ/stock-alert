@@ -155,11 +155,20 @@ class MacroAgent:
             result["news_count"]  = len(news)
             result["top_news"]    = news[:5]
             logger.info(f"거시 판단: {result.get('judgment')} / VIX={market_data.get('VIX',{}).get('value','N/A')} / 확신도={result.get('confidence')}%")
+            self._save_market_data_cache(market_data)
             return result
 
         except Exception as e:
             logger.error(f"거시 판단 GPT 오류: {e}")
             return self._neutral_result(str(e))
+
+    def _save_market_data_cache(self, market_data: dict):
+        """국면 분류기(regime_classifier)가 VIX 등을 읽어갈 수 있도록 캐시 저장"""
+        try:
+            with open("data/macro_cache.json", "w") as f:
+                json.dump({"market_data": market_data}, f, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"거시 데이터 캐시 저장 실패: {e}")
 
     def _neutral_result(self, reason: str = "") -> dict:
         return {
