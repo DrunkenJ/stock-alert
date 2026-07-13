@@ -396,7 +396,7 @@ def run_morning_analysis():
 
         if not picks:
             logger.warning("추천 종목 없음")
-            notifier.send_error_alert("오늘 조건 충족 종목 없음", context="장전 분석")
+            notifier.send_no_picks_notice(macro_result.get("regime", {}))
             return
 
         today_picks = picks

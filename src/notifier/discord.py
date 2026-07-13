@@ -250,6 +250,25 @@ class DiscordNotifier:
         payload = {"embeds": [embed]}
         self._send(payload, url=self.alert_url)
 
+    def send_no_picks_notice(self, regime: dict):
+        """추천 종목 없음 알림 (정상 결과 - 에러 아님)"""
+        regime_label = regime.get("regime_label", "알 수 없음")
+        strategy = regime.get("strategy", "")
+        signals = "\n".join(f"• {s}" for s in regime.get("signals", [])[:4])
+        embed = {
+            "title": "😴 오늘은 추천 종목 없음",
+            "description": (
+                "조건을 충족하는 종목이 없어 알림을 스킵합니다. (시스템 오류 아님)\n\n"
+                f"**시장 국면:** {regime_label}\n"
+                f"**전략:** {strategy}\n"
+                f"{signals}"
+            ),
+            "color": self.COLOR_GRAY,
+            "footer": {"text": _kst_now()},
+        }
+        payload = {"embeds": [embed]}
+        self._send(payload)
+
     def send_startup_message(self):
         """봇 시작 알림"""
         embed = {
