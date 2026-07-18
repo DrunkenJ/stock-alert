@@ -331,6 +331,7 @@ def calculate_dynamic_stops(entry_price: int, atr: float,
 
     # 손절폭 상한 (캡): 진입가의 -7% 까지만 허용
     # 변동성 큰 종목이 ATR×2로 -15%까지 벌어지던 문제 해결
+    # (주의: 리플레이 백테스트 결과 캡을 3.5%로 줄이면 승률 64%→28% 붕괴 - 축소 금지)
     MAX_STOP_PCT = 0.07   # 최대 손절폭 7%
     MIN_STOP_PCT = 0.02   # 최소 손절폭 2%
 

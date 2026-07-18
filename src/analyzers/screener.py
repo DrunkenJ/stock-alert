@@ -270,6 +270,22 @@ class StockScreener:
 
         investor = self.kis.get_investor_trend(ticker, days=20)
         tech_result = self.tech.analyze(candles)
+
+        # ── 과열 추격 제외 (백데이터 검증 필터) ────────
+        # 78건 리뷰: RSI>70 진입 13건 평균 -2.83%, 거래량 2배 초과 진입 12건 평균 -4.5%
+        # 두 조건 제외 시 기대값 -0.43% → +0.31%/건
+        _ind = tech_result.get("indicators", {})
+        max_rsi = float(os.getenv("MAX_ENTRY_RSI", "70"))
+        _rsi = _ind.get("rsi")
+        if _rsi is not None and _rsi > max_rsi:
+            logger.debug(f"  [{ticker}] RSI {_rsi:.1f} 과매수 - 추격 제외")
+            return None
+        max_vol_ratio = float(os.getenv("MAX_ENTRY_VOL_RATIO", "2.0"))
+        _vr = _ind.get("vol_ratio")
+        if _vr is not None and _vr > max_vol_ratio:
+            logger.debug(f"  [{ticker}] 거래량 평균 대비 {_vr:.1f}배 폭증 - 추격 제외")
+            return None
+
         supply_result = self.sd.analyze(investor, price_data)
 
         # 52주 고점 위치에 따른 점수 보정 적용

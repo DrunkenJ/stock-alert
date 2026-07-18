@@ -25,6 +25,7 @@ PARTIAL_1_RATIO = 0.5
 PARTIAL_2_RATIO = 0.3
 TRAILING_PCT   = 0.03
 MAX_HOLD_DAYS  = 7
+COST_PCT       = 0.3   # 왕복 거래비용 %p (수수료+거래세+슬리피지) - 청산 시 1회 차감
 
 
 class TradeSimulator:
@@ -140,6 +141,7 @@ class TradeSimulator:
                                     - (PARTIAL_2_RATIO if trade["partial_2_done"] else 0)
                     pct = (price - trade["entry_price"]) / trade["entry_price"] * 100
                     trade["realized_pct"] += pct * remaining
+                    trade["realized_pct"] -= COST_PCT
                     trade["close_date"] = today
                     trade["close_reason"] = "max_hold"
                     trade["events"].append({
@@ -175,6 +177,7 @@ class TradeSimulator:
             remaining = 1.0 - (PARTIAL_1_RATIO if trade["partial_1_done"] else 0)
             pct = (trade["stop_loss"] - entry) / entry * 100
             trade["realized_pct"] += pct * remaining
+            trade["realized_pct"] -= COST_PCT
             trade["close_date"]   = today
             trade["close_reason"] = "stop_loss"
             trade["events"].append({
@@ -220,6 +223,7 @@ class TradeSimulator:
             remaining = 1.0 - PARTIAL_1_RATIO - PARTIAL_2_RATIO
             pct = (trade["trailing_stop"] - entry) / entry * 100
             trade["realized_pct"]  += pct * remaining
+            trade["realized_pct"]  -= COST_PCT
             trade["close_date"]    = today
             trade["close_reason"]  = "trailing_stop"
             trade["high_at_close"] = trade["high_price"]
