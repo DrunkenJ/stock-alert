@@ -10,6 +10,18 @@ from loguru import logger
 class SupplyDemandAnalyzer:
     """외국인 · 기관 수급 분석"""
 
+    @staticmethod
+    def _net_ratio(net_shares: int, price: float, market_cap: float) -> float | None:
+        """순매수 주식 수를 시가총액 대비 비중(%)으로 환산
+
+        절대 주식 수(예: 50만주)는 3천원짜리 주식과 30만원짜리 주식에서
+        전혀 다른 의미를 갖는다. 저가주 편향을 없애기 위해 금액 비중으로 정규화한다.
+        시총 정보가 없으면 None → 호출부에서 기존 주식 수 기준으로 폴백.
+        """
+        if not price or not market_cap or market_cap <= 0:
+            return None
+        return net_shares * price / market_cap * 100
+
     def analyze(self, investor_data: dict, price_data: dict) -> dict:
         """수급 데이터 종합 분석 → 점수 반환"""
         score = 0
@@ -21,31 +33,44 @@ class SupplyDemandAnalyzer:
         inst_consec = investor_data.get("inst_consecutive", 0)
         detail = investor_data.get("detail", [])
 
+        price = price_data.get("price", 0)
+        market_cap = price_data.get("market_cap", 0)
+        f_ratio = self._net_ratio(foreign_net, price, market_cap)
+        i_ratio = self._net_ratio(inst_net, price, market_cap)
+
         # ── 외국인 순매수 분석 ────────────────────
+        # 시총 대비 비중 기준 (폴백: 절대 주식 수)
+        if f_ratio is not None:
+            big, mid, big_sell = f_ratio > 0.5, f_ratio > 0.15, f_ratio < -0.5
+            f_desc = f"5일 합산 시총 대비 {f_ratio:+.2f}%"
+        else:
+            big, mid, big_sell = foreign_net > 500_000, foreign_net > 100_000, foreign_net < -500_000
+            f_desc = f"5일 합산 {foreign_net:+,}주"
+
         if foreign_net > 0:
             # 순매수 강도
-            if foreign_net > 500_000:
+            if big:
                 score += 4
                 signals.append({
                     "type": "positive",
                     "name": "외국인 대규모 순매수",
-                    "detail": f"5일 합산 +{foreign_net:,}주"
+                    "detail": f_desc
                 })
-            elif foreign_net > 100_000:
+            elif mid:
                 score += 2
                 signals.append({
                     "type": "positive",
                     "name": "외국인 순매수",
-                    "detail": f"5일 합산 +{foreign_net:,}주"
+                    "detail": f_desc
                 })
             else:
                 score += 1
-        elif foreign_net < -500_000:
+        elif big_sell:
             score -= 3
             signals.append({
                 "type": "negative",
                 "name": "외국인 대규모 순매도",
-                "detail": f"5일 합산 {foreign_net:,}주"
+                "detail": f_desc
             })
 
         # 연속 매수일
@@ -65,29 +90,36 @@ class SupplyDemandAnalyzer:
             })
 
         # ── 기관 순매수 분석 ──────────────────────
+        if i_ratio is not None:
+            i_big, i_mid, i_big_sell = i_ratio > 0.3, i_ratio > 0.1, i_ratio < -0.3
+            i_desc = f"5일 합산 시총 대비 {i_ratio:+.2f}%"
+        else:
+            i_big, i_mid, i_big_sell = inst_net > 300_000, inst_net > 50_000, inst_net < -300_000
+            i_desc = f"5일 합산 {inst_net:+,}주"
+
         if inst_net > 0:
-            if inst_net > 300_000:
+            if i_big:
                 score += 3
                 signals.append({
                     "type": "positive",
                     "name": "기관 대규모 순매수",
-                    "detail": f"5일 합산 +{inst_net:,}주"
+                    "detail": i_desc
                 })
-            elif inst_net > 50_000:
+            elif i_mid:
                 score += 2
                 signals.append({
                     "type": "positive",
                     "name": "기관 순매수",
-                    "detail": f"5일 합산 +{inst_net:,}주"
+                    "detail": i_desc
                 })
             else:
                 score += 1
-        elif inst_net < -300_000:
+        elif i_big_sell:
             score -= 2
             signals.append({
                 "type": "negative",
                 "name": "기관 순매도",
-                "detail": f"5일 합산 {inst_net:,}주"
+                "detail": i_desc
             })
 
         if inst_consec >= 5:
@@ -151,6 +183,8 @@ class SupplyDemandAnalyzer:
                 "foreign_consecutive": foreign_consec,
                 "inst_consecutive": inst_consec,
                 "is_double_buy": foreign_net > 0 and inst_net > 0,
+                "foreign_cap_ratio": round(f_ratio, 3) if f_ratio is not None else None,
+                "inst_cap_ratio": round(i_ratio, 3) if i_ratio is not None else None,
             }
         }
 

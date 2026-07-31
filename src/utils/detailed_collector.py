@@ -56,10 +56,18 @@ def record_detailed_trade(pick: dict, candles: list = None,
             "vol_ratio":         pick.get("indicators", {}).get("vol_ratio", None),
             "change_rate":       pick.get("change_rate", 0),
             "open_price":        pick.get("open_price", 0),
+            # 진입 품질 지표 (학습/사후분석용)
+            "atr_pct":           pick.get("indicators", {}).get("atr_pct", None),
+            "atr_ratio":         pick.get("indicators", {}).get("atr_ratio", None),
+            "disparity20":       pick.get("indicators", {}).get("disparity20", None),
+            "ret20":             pick.get("indicators", {}).get("ret20", None),
+            "rs":                pick.get("indicators", {}).get("rs", None),
 
             # 수급 정보
             "foreign_net":       pick.get("supply_summary", {}).get("foreign_net", 0),
             "inst_net":          pick.get("supply_summary", {}).get("inst_net", 0),
+            "foreign_cap_ratio": pick.get("supply_summary", {}).get("foreign_cap_ratio", None),
+            "inst_cap_ratio":    pick.get("supply_summary", {}).get("inst_cap_ratio", None),
             "supply_pattern":    pick.get("supply_pattern", {}).get("pattern", ""),
 
             # 뉴스 감성

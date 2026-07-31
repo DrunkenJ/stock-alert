@@ -68,6 +68,8 @@ class StockScreener:
         # Step 2: 각 종목 상세 분석
         logger.info("[2/4] 종목별 상세 분석 중...")
         analyzed = []
+        self._breadth_total = 0
+        self._breadth_above = 0
         for i, ticker in enumerate(candidates[:self.top_n]):
             try:
                 stock = self._analyze_single(ticker)
@@ -79,6 +81,13 @@ class StockScreener:
                 logger.warning(f"  [{ticker}] 분석 실패: {e}")
 
         logger.info(f"  → 분석 완료: {len(analyzed)}개")
+
+        # ── 시장 브레드스 게이트 ──────────────────────────
+        # 국면분류기는 지수를 보지만 실제 매매 대상은 개별 종목 풀이다.
+        # 79건 기간 중 67건이 'trending_up' 판정이었으나 유니버스는 20일 -15%였다.
+        # → 후보 풀 자체의 건강도(20MA 위 비율)로 직접 게이트를 건다.
+        if not self._check_breadth():
+            return []
 
         # Step 3: 점수 기반 1차 필터
         logger.info(f"[3/4] 1차 점수 필터링... ({len(analyzed)}개 → 상위 {self.final_picks * 3}개)")
@@ -174,42 +183,88 @@ class StockScreener:
         logger.info(f"최종 선정 ({len(result)}개): {[s['name'] for s in result]}")
         return result
 
-    def _collect_candidates(self) -> list[str]:
-        """거래량 상위 종목 수집 + 종목명 DB에 즉시 등록"""
-        tickers = []
-        seen = set()
-
+    def _register_names(self, stocks: list[dict]) -> int:
+        """랭킹 API 응답의 종목명을 stock_db에 즉시 저장"""
         try:
-            vol_stocks = self.kis.get_volume_ranking(market="J", top_n=self.top_n)
-
-            # 거래량 API 응답의 종목명을 stock_db에 즉시 저장
-            try:
-                from src.utils.stock_db import get_db
-                db = get_db()
-                if not db._loaded:
-                    db.load()
-                added = 0
-                for s in vol_stocks:
-                    ticker = s.get("ticker", "")
-                    name = s.get("name", "")
-                    if ticker and name and ticker not in db._ticker_to_name:
-                        db._db[name] = ticker
-                        db._ticker_to_name[ticker] = name
-                        added += 1
-                if added > 0:
-                    db._save_to_file()
-                    logger.info(f"  종목 DB 보완: {added}개 추가")
-            except Exception as e:
-                logger.debug(f"DB 보완 실패: {e}")
-
-            for s in vol_stocks:
+            from src.utils.stock_db import get_db
+            db = get_db()
+            if not db._loaded:
+                db.load()
+            added = 0
+            for s in stocks:
                 ticker = s.get("ticker", "")
-                if ticker and ticker not in seen:
-                    seen.add(ticker)
-                    tickers.append(ticker)
-            logger.info(f"  거래량 상위: {len(tickers)}개")
+                name = s.get("name", "")
+                if ticker and name and ticker not in db._ticker_to_name:
+                    db._db[name] = ticker
+                    db._ticker_to_name[ticker] = name
+                    added += 1
+            if added > 0:
+                db._save_to_file()
+                logger.info(f"  종목 DB 보완: {added}개 추가")
+            return added
         except Exception as e:
-            logger.error(f"거래량 조회 실패: {e}")
+            logger.debug(f"DB 보완 실패: {e}")
+            return 0
+
+    def _collect_candidates(self) -> list[str]:
+        """후보 종목 수집 + 종목명 DB에 즉시 등록
+
+        79건 실거래 검증 결과, 후보를 '거래량 상위'에서만 뽑는 것이 손실의
+        주원인이었다. 픽 시점에 이미 20일간 중앙값 +19% 상승(33%는 +30% 이상),
+        ATR이 주가의 6%를 넘는 종목이 91%로, 급등 소진 구간을 매수하는 구조였다.
+        → 시가총액 상위 풀을 1차 소스로 쓰고, 거래량 상위는 보조 소스로 제한한다.
+        """
+        mode = os.getenv("UNIVERSE_MODE", "mixed").lower()
+        vol_ratio_env = float(os.getenv("VOLUME_UNIVERSE_RATIO", "0.3"))
+        tickers: list[str] = []
+        seen: set[str] = set()
+
+        def add_all(stocks: list[dict], limit: int) -> int:
+            n = 0
+            for s in stocks:
+                if n >= limit:
+                    break
+                t = s.get("ticker", "")
+                if t and t not in seen:
+                    seen.add(t)
+                    tickers.append(t)
+                    n += 1
+            return n
+
+        # ── 1차 소스: 시가총액 상위 (안정적 유니버스) ──────
+        if mode in ("mixed", "marketcap"):
+            cap_quota = self.top_n if mode == "marketcap" else \
+                int(self.top_n * (1 - vol_ratio_env))
+            got = 0
+            for market_code in ("0000", "1001"):   # 전체 / 코스닥
+                if got >= cap_quota:
+                    break
+                try:
+                    cap_stocks = self.kis.get_market_cap_ranking(
+                        market=market_code, top_n=cap_quota * 2
+                    )
+                    if not cap_stocks:
+                        continue
+                    self._register_names(cap_stocks)
+                    got += add_all(cap_stocks, cap_quota - got)
+                except Exception as e:
+                    logger.debug(f"시총 상위 조회 실패({market_code}): {e}")
+            if got:
+                logger.info(f"  시총 상위: {got}개")
+            else:
+                logger.warning("  시총 상위 조회 결과 없음 - 거래량 상위로 대체")
+
+        # ── 2차 소스: 거래량 상위 (보조) ──────────────────
+        if mode in ("mixed", "volume") or not tickers:
+            remain = max(0, self.top_n - len(tickers))
+            if remain:
+                try:
+                    vol_stocks = self.kis.get_volume_ranking(market="J", top_n=remain * 2)
+                    self._register_names(vol_stocks)
+                    got = add_all(vol_stocks, remain)
+                    logger.info(f"  거래량 상위: {got}개")
+                except Exception as e:
+                    logger.error(f"거래량 조회 실패: {e}")
 
         return tickers
 
@@ -269,21 +324,61 @@ class StockScreener:
             return None
 
         investor = self.kis.get_investor_trend(ticker, days=20)
-        tech_result = self.tech.analyze(candles)
 
-        # ── 과열 추격 제외 (백데이터 검증 필터) ────────
-        # 78건 리뷰: RSI>70 진입 13건 평균 -2.83%, 거래량 2배 초과 진입 12건 평균 -4.5%
-        # 두 조건 제외 시 기대값 -0.43% → +0.31%/건
+        # 상대강도(RS) 계산용 지수 수익률 - 조회 실패 시 None (RS 생략)
+        market_name = price_data.get("market") or self._detect_market(ticker)
+        try:
+            from src.utils.index_data import get_market_ret20
+            market_ret20 = get_market_ret20(market_name)
+        except Exception:
+            market_ret20 = None
+
+        tech_result = self.tech.analyze(candles, market_ret20=market_ret20)
         _ind = tech_result.get("indicators", {})
+
+        # ── 시장 브레드스 집계 (필터 적용 전 전수 집계) ──
+        # 하드필터로 걸러지기 전에 세어야 유니버스 전체의 건강도를 반영한다
+        if _ind.get("ma20"):
+            self._breadth_total = getattr(self, "_breadth_total", 0) + 1
+            if _ind.get("above_ma20"):
+                self._breadth_above = getattr(self, "_breadth_above", 0) + 1
+
+        # ── 과열 추격 제외 (79건 백데이터 검증 필터) ────
+        # 픽의 3일 알파가 -5.18%p (다음날 상승확률 28%). 원인은 급등 소진 구간 매수.
+        # 아래 필터 조합으로 알파 -5.18%p → -0.89%p (82% 개선) 확인.
         max_rsi = float(os.getenv("MAX_ENTRY_RSI", "70"))
         _rsi = _ind.get("rsi")
         if _rsi is not None and _rsi > max_rsi:
             logger.debug(f"  [{ticker}] RSI {_rsi:.1f} 과매수 - 추격 제외")
             return None
-        max_vol_ratio = float(os.getenv("MAX_ENTRY_VOL_RATIO", "2.0"))
+
+        # 거래량비: <1.0배 승률 68%/+0.35% vs >2.0배 승률 44%/-4.17%
+        max_vol_ratio = float(os.getenv("MAX_ENTRY_VOL_RATIO", "1.5"))
         _vr = _ind.get("vol_ratio")
         if _vr is not None and _vr > max_vol_ratio:
-            logger.debug(f"  [{ticker}] 거래량 평균 대비 {_vr:.1f}배 폭증 - 추격 제외")
+            logger.debug(f"  [{ticker}] 거래량 평균 대비 {_vr:.1f}배 급증 - 추격 제외")
+            return None
+
+        # ATR 상한: 기존 픽의 91%가 ATR>6%인 초고변동성 종목이었고,
+        # 이 때문에 entry_calculator의 동적 손절이 100% 7% 캡에 걸려 무력화됐다
+        max_atr_pct = float(os.getenv("MAX_ENTRY_ATR_PCT", "5.0"))
+        _atr_pct = _ind.get("atr_pct")
+        if _atr_pct is not None and _atr_pct > max_atr_pct:
+            logger.debug(f"  [{ticker}] ATR {_atr_pct:.1f}% 초고변동성 - 제외")
+            return None
+
+        # 20MA 이격도 상한: 이격 10~20% 구간 3일 -12.2%, 20%+ -9.3%
+        max_disparity = float(os.getenv("MAX_ENTRY_DISPARITY", "10.0"))
+        _disp = _ind.get("disparity20")
+        if _disp is not None and _disp > max_disparity:
+            logger.debug(f"  [{ticker}] 20MA 이격 +{_disp:.1f}% 과열 - 제외")
+            return None
+
+        # 20일 상승률 상한: 급등 후 추격 매수 차단
+        max_ret20 = float(os.getenv("MAX_ENTRY_RET20", "25.0"))
+        _r20 = _ind.get("ret20")
+        if _r20 is not None and _r20 > max_ret20:
+            logger.debug(f"  [{ticker}] 20일 +{_r20:.0f}% 급등 후 - 추격 제외")
             return None
 
         supply_result = self.sd.analyze(investor, price_data)
@@ -339,6 +434,32 @@ class StockScreener:
             ),
             "_candles": candles,
         }
+
+    def _check_breadth(self) -> bool:
+        """후보 풀의 20MA 상회 비율로 매매 가능 여부 판단
+
+        비율이 임계치 미만이면 개별 종목 점수와 무관하게 당일 픽을 중단한다.
+        (하락장에서 롱온리 추격 매수를 막는 최종 안전장치)
+        """
+        total = getattr(self, "_breadth_total", 0)
+        above = getattr(self, "_breadth_above", 0)
+        if total < 10:
+            logger.debug(f"브레드스 표본 부족({total}개) - 게이트 미적용")
+            return True
+
+        breadth = above / total * 100
+        min_breadth = float(os.getenv("MIN_MARKET_BREADTH", "50"))
+        self._breadth_pct = breadth
+
+        if breadth < min_breadth:
+            logger.warning(
+                f"시장 브레드스 {breadth:.0f}% (기준 {min_breadth:.0f}%) - "
+                f"후보 {total}개 중 20MA 위 {above}개뿐. 당일 추천 중단"
+            )
+            return False
+
+        logger.info(f"  시장 브레드스: {breadth:.0f}% ({above}/{total}) - 통과")
+        return True
 
     def _get_regime(self) -> dict:
         """현재 시장 국면 조회 (캐시 우선)"""
