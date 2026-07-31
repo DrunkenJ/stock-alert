@@ -236,12 +236,13 @@ class StockScreener:
             cap_quota = self.top_n if mode == "marketcap" else \
                 int(self.top_n * (1 - vol_ratio_env))
             got = 0
-            for market_code in ("0000", "1001"):   # 전체 / 코스닥
+            # 랭킹 API는 호출당 30건까지만 반환 → 코스피/코스닥을 각각 조회
+            for market_code in (self.kis.MCAP_KOSDAQ, self.kis.MCAP_KOSPI):
                 if got >= cap_quota:
                     break
                 try:
                     cap_stocks = self.kis.get_market_cap_ranking(
-                        market=market_code, top_n=cap_quota * 2
+                        market=market_code, top_n=cap_quota
                     )
                     if not cap_stocks:
                         continue

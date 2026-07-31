@@ -222,14 +222,22 @@ class KISClient:
         result["inst_consecutive"] = inst_consec
         return result
 
-    def get_market_cap_ranking(self, market: str = "0", top_n: int = 100) -> list[dict]:
-        """시가총액 상위 종목 조회"""
+    # 시가총액 상위 랭킹의 시장 구분 코드
+    MCAP_KOSPI = "0001"
+    MCAP_KOSDAQ = "1001"
+
+    def get_market_cap_ranking(self, market: str = MCAP_KOSPI, top_n: int = 100) -> list[dict]:
+        """시가총액 상위 종목 조회
+
+        market: "0001"=코스피, "1001"=코스닥 (KIS 랭킹 API의 fid_input_iscd)
+        한 번 호출당 30건까지만 반환된다.
+        """
         data = self._get(
             "/uapi/domestic-stock/v1/ranking/market-cap",
-            "FHPST01700000",
+            "FHPST01740000",
             {
                 "fid_cond_mrkt_div_code": "J",
-                "fid_cond_scr_div_code": "20171",
+                "fid_cond_scr_div_code": "20174",
                 "fid_input_iscd": market,
                 "fid_div_cls_code": "0",
                 "fid_blng_cls_code": "0",
@@ -250,8 +258,9 @@ class KISClient:
                     "price": int(row.get("stck_prpr", 0)),
                     "change_rate": float(row.get("prdy_ctrt", 0)),
                     "volume": int(row.get("acml_vol", 0)),
-                    "market_cap": int(row.get("stck_avls", 0)),
-                    "market": "KOSPI" if market == "1" else "KOSDAQ",
+                    # stck_avls 는 억원 단위 → get_stock_price 와 동일하게 원 단위로 맞춘다
+                    "market_cap": int(row.get("stck_avls", 0)) * 100_000_000,
+                    "market": "KOSDAQ" if market == self.MCAP_KOSDAQ else "KOSPI",
                 })
             except (KeyError, ValueError):
                 continue
