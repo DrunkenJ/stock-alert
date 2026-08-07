@@ -19,11 +19,11 @@ ACTIVE_FILE  = Path("data/active_trades.json")
 HISTORY_FILE = Path("data/trade_history.json")
 
 # 시뮬레이션 파라미터 (실제 시스템과 동일)
-PARTIAL_1_PCT  = 0.04
-PARTIAL_2_PCT  = 0.08
-PARTIAL_1_RATIO = 0.5
-PARTIAL_2_RATIO = 0.3
-TRAILING_PCT   = 0.03
+from src.utils.exit_policy import (  # noqa: F401
+    PARTIAL_1_PCT, PARTIAL_2_PCT, PARTIAL_1_RATIO, PARTIAL_2_RATIO,
+    TRAILING_PCT, calc_partial_prices, realized_pct_at,
+)
+
 MAX_HOLD_DAYS  = 7
 COST_PCT       = 0.3   # 왕복 거래비용 %p (수수료+거래세+슬리피지) - 청산 시 1회 차감
 
@@ -54,6 +54,7 @@ class TradeSimulator:
             target_price = es.get("target_price", int(entry_price * 1.06))
             stop_loss    = es.get("stop_loss",    int(entry_price * 0.97))
             atr          = es.get("atr", 0)
+            _p1, _p2     = calc_partial_prices(entry_price, target_price)
 
             self.active[ticker] = {
                 "ticker":           ticker,
@@ -69,9 +70,9 @@ class TradeSimulator:
                 "score":            pick.get("final_score", 0),
                 "score_confidence": pick.get("score_confidence", ""),
                 "ai_score":         pick.get("ai_eval", {}).get("ai_score", 0),
-                # 분할 익절 상태
-                "partial_1_price":  int(entry_price * (1 + PARTIAL_1_PCT)),
-                "partial_2_price":  int(entry_price * (1 + PARTIAL_2_PCT)),
+                # 분할 익절 상태 (실거래 trailing_stop.add() 와 동일 계산)
+                "partial_1_price":  _p1,
+                "partial_2_price":  _p2,
                 "partial_1_done":   False,
                 "partial_2_done":   False,
                 "partial_1_date":   None,
@@ -192,7 +193,8 @@ class TradeSimulator:
         if not trade["partial_1_done"] and high >= trade["partial_1_price"]:
             trade["partial_1_done"] = True
             trade["partial_1_date"] = today
-            pct = PARTIAL_1_PCT * 100
+            # 익절가가 목표가에 연동돼 움직이므로 상수(4%)가 아닌 체결가 기준으로 기록
+            pct = realized_pct_at(entry, trade["partial_1_price"])
             trade["realized_pct"] += pct * PARTIAL_1_RATIO
             trade["stop_loss"]     = entry  # 본전 손절로 상향
             trade["events"].append({
@@ -207,7 +209,7 @@ class TradeSimulator:
                 and high >= trade["partial_2_price"]:
             trade["partial_2_done"] = True
             trade["partial_2_date"] = today
-            pct = PARTIAL_2_PCT * 100
+            pct = realized_pct_at(entry, trade["partial_2_price"])
             trade["realized_pct"]  += pct * PARTIAL_2_RATIO
             trade["trailing_active"] = True
             trade["trailing_stop"]   = int(trade["partial_2_price"] * (1 - TRAILING_PCT))

@@ -11,14 +11,15 @@ from pathlib import Path
 from loguru import logger
 
 TRAILING_FILE = Path("data/trailing_stops.json")
-TRAILING_PCT  = 0.03  # 고점 대비 -3% 하락 시 매도
+from src.utils.exit_policy import (  # noqa: F401  (하위 호환 재노출)
+    PARTIAL_1_PCT, PARTIAL_2_PCT, PARTIAL_1_RATIO, PARTIAL_2_RATIO,
+    TRAILING_PCT, calc_partial_prices,
+)
+
 ACTIVATE_PCT  = 0.03  # 익절가 도달 시점 트레일링 활성화
 
-# 분할 익절 설정 (최소값 - 실제로는 종목별 ATR 목표가에 비례해 add()에서 확대됨)
-PARTIAL_1_PCT  = 0.04  # 1차 익절 최소: +4% (50% 매도)
-PARTIAL_2_PCT  = 0.08  # 2차 익절 최소: +8% (30% 매도)
-PARTIAL_1_RATIO = 0.5  # 1차 매도 비율
-PARTIAL_2_RATIO = 0.3  # 2차 매도 비율
+# 분할 익절 임계값/비율은 src/utils/exit_policy.py 에서만 정의한다
+# (시뮬레이터와 값이 갈라져 학습 루프가 다른 전략을 측정하던 문제)
 # 나머지 20%는 트레일링 스탑이 관리
 
 
@@ -40,18 +41,8 @@ class TrailingStopManager:
         stop_loss    = es.get("stop_loss", int(entry_price * 0.97))
         atr          = es.get("atr", 0)
 
-        # 분할 익절가 계산
-        # entry_calculator가 종목별 ATR/점수 기반으로 계산한 target_price(손익비 반영)에
-        # 비례해서 1차/2차 익절폭을 정한다. 예전에는 모든 종목에 고정 4%/8%를 적용했는데,
-        # 손절폭은 ATR에 따라 최대 -7%까지 벌어지는 반면 익절은 항상 4%/8%로 묶여 있어서
-        # 변동성(거래량 급증)이 큰 종목일수록 손익비가 무너지는 문제가 있었다.
-        # (실거래 데이터: vol_ratio가 높은 종목일수록 최종 수익률이 나빴던 원인 중 하나)
-        # 고정값은 하한으로만 사용 - 저변동성 종목의 빠른 익절 습관은 그대로 유지.
-        target_upside_pct = (target_price - entry_price) / entry_price if entry_price else 0.0
-        partial_1_pct = max(PARTIAL_1_PCT, target_upside_pct * 0.5)
-        partial_2_pct = max(PARTIAL_2_PCT, target_upside_pct)
-        partial_1_price = int(entry_price * (1 + partial_1_pct))
-        partial_2_price = int(entry_price * (1 + partial_2_pct))
+        # 분할 익절가 계산 (시뮬레이터와 동일한 로직 - exit_policy 단일 정의)
+        partial_1_price, partial_2_price = calc_partial_prices(entry_price, target_price)
 
         self.stops[ticker] = {
             "ticker":       ticker,
