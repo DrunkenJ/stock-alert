@@ -13,7 +13,7 @@ from loguru import logger
 TRAILING_FILE = Path("data/trailing_stops.json")
 from src.utils.exit_policy import (  # noqa: F401  (하위 호환 재노출)
     PARTIAL_1_PCT, PARTIAL_2_PCT, PARTIAL_1_RATIO, PARTIAL_2_RATIO,
-    TRAILING_PCT, calc_partial_prices,
+    TRAILING_PCT, calc_partial_prices, calc_trailing_stop,
 )
 
 ACTIVATE_PCT  = 0.03  # 익절가 도달 시점 트레일링 활성화
@@ -42,7 +42,7 @@ class TrailingStopManager:
         atr          = es.get("atr", 0)
 
         # 분할 익절가 계산 (시뮬레이터와 동일한 로직 - exit_policy 단일 정의)
-        partial_1_price, partial_2_price = calc_partial_prices(entry_price, target_price)
+        partial_1_price, partial_2_price = calc_partial_prices(entry_price, target_price, atr)
 
         self.stops[ticker] = {
             "ticker":       ticker,
@@ -87,7 +87,7 @@ class TrailingStopManager:
             s["high_price"] = current_price
             high = current_price
             if s["trailing_active"]:
-                s["trailing_stop"] = int(high * (1 - TRAILING_PCT))
+                s["trailing_stop"] = calc_trailing_stop(high, s.get("atr", 0), entry)
                 logger.debug(
                     f"트레일링 갱신: {s['name']} "
                     f"고점={high:,} 트레일링손절={s['trailing_stop']:,}"
@@ -121,7 +121,7 @@ class TrailingStopManager:
             logger.info(f"2차 분할 익절: {s['name']} +{gain_pct:.1f}% → 30% 매도, 트레일링 활성화")
             # 트레일링 스탑 활성화 (나머지 20% 관리)
             s["trailing_active"] = True
-            s["trailing_stop"]   = int(current_price * (1 - TRAILING_PCT))
+            s["trailing_stop"]   = calc_trailing_stop(current_price, s.get("atr", 0), entry)
             s["trailing_activated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
             self._save()
             return {
@@ -139,7 +139,7 @@ class TrailingStopManager:
         # ── 트레일링 활성화 체크 (분할 미사용 시 기존 방식) ─
         if not s["trailing_active"] and not s.get("partial_1_done") and current_price >= target:
             s["trailing_active"] = True
-            s["trailing_stop"] = int(high * (1 - TRAILING_PCT))
+            s["trailing_stop"] = calc_trailing_stop(high, s.get("atr", 0), entry)
             s["trailing_activated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
             gain_pct = (current_price - entry) / entry * 100
             logger.info(

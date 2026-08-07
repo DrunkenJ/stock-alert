@@ -21,7 +21,7 @@ HISTORY_FILE = Path("data/trade_history.json")
 # 시뮬레이션 파라미터 (실제 시스템과 동일)
 from src.utils.exit_policy import (  # noqa: F401
     PARTIAL_1_PCT, PARTIAL_2_PCT, PARTIAL_1_RATIO, PARTIAL_2_RATIO,
-    TRAILING_PCT, calc_partial_prices, realized_pct_at,
+    TRAILING_PCT, calc_partial_prices, calc_trailing_stop, realized_pct_at,
 )
 
 MAX_HOLD_DAYS  = 7
@@ -54,7 +54,7 @@ class TradeSimulator:
             target_price = es.get("target_price", int(entry_price * 1.06))
             stop_loss    = es.get("stop_loss",    int(entry_price * 0.97))
             atr          = es.get("atr", 0)
-            _p1, _p2     = calc_partial_prices(entry_price, target_price)
+            _p1, _p2     = calc_partial_prices(entry_price, target_price, atr)
 
             self.active[ticker] = {
                 "ticker":           ticker,
@@ -170,7 +170,7 @@ class TradeSimulator:
         if high > trade["high_price"]:
             trade["high_price"] = high
             if trade["trailing_active"]:
-                trade["trailing_stop"] = int(high * (1 - TRAILING_PCT))
+                trade["trailing_stop"] = calc_trailing_stop(high, trade.get("atr", 0), entry)
 
         # 손절 체크 (트레일링 미활성 + 저점이 손절가 이하)
         if not trade["trailing_active"] and low <= trade["stop_loss"]:
@@ -212,7 +212,7 @@ class TradeSimulator:
             pct = realized_pct_at(entry, trade["partial_2_price"])
             trade["realized_pct"]  += pct * PARTIAL_2_RATIO
             trade["trailing_active"] = True
-            trade["trailing_stop"]   = int(trade["partial_2_price"] * (1 - TRAILING_PCT))
+            trade["trailing_stop"]   = calc_trailing_stop(trade["partial_2_price"], trade.get("atr", 0), entry)
             trade["events"].append({
                 "date":  today,
                 "event": "2차 익절 (30% 매도)",
@@ -222,7 +222,7 @@ class TradeSimulator:
 
         # 트레일링 스탑 발동
         if trade["trailing_active"] and low <= trade["trailing_stop"]:
-            remaining = 1.0 - PARTIAL_1_RATIO - PARTIAL_2_RATIO
+            remaining = max(0.0, 1.0 - PARTIAL_1_RATIO - PARTIAL_2_RATIO)
             pct = (trade["trailing_stop"] - entry) / entry * 100
             trade["realized_pct"]  += pct * remaining
             trade["realized_pct"]  -= COST_PCT

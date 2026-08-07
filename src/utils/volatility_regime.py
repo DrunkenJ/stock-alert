@@ -30,8 +30,11 @@ import statistics
 from loguru import logger
 
 
-# entry_calculator.MAX_STOP_PCT 와 동기화 (%)
-STOP_CAP_PCT = 7.0
+# 현재 청산 모드의 손절 상한(%) - exit_policy 가 단일 출처
+# (ATR 연동 모드를 켜면 손절 캡이 10%로 넓어지므로 ATR 실링도 함께 올라간다)
+from src.utils.exit_policy import stop_cap_pct
+
+STOP_CAP_PCT = stop_cap_pct()
 
 # 손절폭이 최소 이 배수만큼은 ATR을 덮어야 한다
 MIN_STOP_ATR_MULT = float(os.getenv("MIN_STOP_ATR_MULT", "0.8"))

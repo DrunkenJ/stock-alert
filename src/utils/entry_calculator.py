@@ -340,13 +340,9 @@ def calculate_dynamic_stops(entry_price: int, atr: float,
         stop_loss = _round_to_tick(entry_price * 0.97, tick)
         target = _round_to_tick(entry_price * 1.06, tick)
     else:
-        # ATR 기반 손절폭 계산
-        raw_stop_dist = atr_stop_mult * atr
-        max_stop_dist = entry_price * MAX_STOP_PCT
-        min_stop_dist = entry_price * MIN_STOP_PCT
-
-        # 손절폭을 2%~7% 범위로 강제 (캡)
-        stop_dist = max(min_stop_dist, min(raw_stop_dist, max_stop_dist))
+        # 손절폭 계산 (모드별 캡은 exit_policy 단일 정의)
+        from src.utils.exit_policy import calc_stop_distance
+        stop_dist = calc_stop_distance(entry_price, atr, atr_stop_mult)
         stop_loss = _round_to_tick(entry_price - stop_dist, tick)
 
         # 익절폭 = 손절폭 × R:R 비율 (손익비 보장)
