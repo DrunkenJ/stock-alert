@@ -55,6 +55,11 @@ class WatchlistManager:
     def add(self, ticker: str, name: str, score: float,
             entry_price: int, reason: str = "") -> bool:
         """추적 종목 등록"""
+        if not ticker or not str(ticker).strip():
+            # 티커 없는 항목은 시세 조회가 영구 실패해 목록에 죽은 채로 남는다
+            logger.warning(f"추적 등록 무시 - 티커 없음: {name}")
+            return False
+
         wl = load_watchlist()
 
         if ticker in wl:
@@ -100,6 +105,10 @@ class WatchlistManager:
         today = datetime.now().date()
         expired = []
         for ticker, item in wl.items():
+            # 티커가 비어있으면 조회 불가 → 즉시 제거
+            if not ticker or not str(ticker).strip():
+                expired.append(ticker)
+                continue
             try:
                 added = datetime.strptime(item["added_date"], "%Y-%m-%d").date()
                 if (today - added).days > MAX_DAYS:

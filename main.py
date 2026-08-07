@@ -44,12 +44,69 @@ logger.add("logs/app.log", rotation="1 day", retention="30 days", level="DEBUG")
 
 KST = pytz.timezone("Asia/Seoul")
 today_picks: list[dict] = []
+today_picks_date: str = ""
 macro_result: dict = {"judgment": "neutral", "recommended_picks": 5}
+
+
+def _set_today_picks(picks: list[dict]):
+    """오늘 추천 종목 갱신 + 파일 백업 (날짜 도장 포함)"""
+    global today_picks, today_picks_date
+    import json as _json
+    from pathlib import Path as _Path
+    today_picks = picks
+    today_picks_date = datetime.now().strftime("%Y-%m-%d")
+    try:
+        _today_file = _Path("data/today_picks.json")
+        _today_file.parent.mkdir(exist_ok=True)
+        with open(_today_file, "w") as _f:
+            _json.dump(picks, _f, ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.debug(f"today_picks 저장 실패: {e}")
+
+
+def _sync_today_picks() -> list[dict]:
+    """날짜가 바뀌었으면 전일 추천 종목을 비운다.
+
+    스케줄러는 재시작 없이 몇 주씩 도는 프로세스라, 픽이 0개인 날에도
+    메모리의 today_picks가 그대로 남으면 지난 종목의 목표가/손절가로
+    실시간 알림이 매일 반복 발사된다.
+    """
+    global today_picks, today_picks_date
+    today = datetime.now().strftime("%Y-%m-%d")
+    if today_picks and today_picks_date != today:
+        logger.info(
+            f"전일({today_picks_date or '미상'}) 추천 종목 정리: "
+            f"{[p.get('name','') for p in today_picks]}"
+        )
+        today_picks = []
+        today_picks_date = today
+    return today_picks
+
+
+_realtime_alerted: set = set()
+
+
+def _mark_realtime_alert(ticker: str, kind: str) -> bool:
+    """실시간 알림 중복 방지 - 같은 종목/트리거는 하루 1회만 발송
+
+    목표가·손절가는 한 번 도달하면 그 뒤로 계속 조건을 만족하므로,
+    체크 주기(기본 15분)마다 같은 알림이 반복 발사되는 것을 막는다.
+    Returns: True면 발송해도 되는 첫 알림
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    key = f"{today}_{ticker}_{kind}"
+    if key in _realtime_alerted:
+        return False
+    # 전일 기록만 정리 (같은 날 다른 종목 기록은 유지)
+    for old in [k for k in _realtime_alerted if not k.startswith(today)]:
+        _realtime_alerted.discard(old)
+    _realtime_alerted.add(key)
+    return True
 
 
 def _restore_today_picks():
     """컨테이너 재시작 시 오늘 추천 종목 복구"""
-    global today_picks
+    global today_picks, today_picks_date
     import json as _json
     from pathlib import Path as _Path
     from datetime import datetime as _dt
@@ -60,6 +117,7 @@ def _restore_today_picks():
             if mtime.date() == _dt.now().date():
                 with open(_today_file) as _f:
                     today_picks = _json.load(_f)
+                today_picks_date = _dt.now().strftime("%Y-%m-%d")
                 logger.info(f"오늘 추천 종목 복구: {[p.get('name','') for p in today_picks]}")
         except Exception as e:
             logger.debug(f"today_picks 복구 실패: {e}")
@@ -396,10 +454,12 @@ def run_morning_analysis():
 
         if not picks:
             logger.warning("추천 종목 없음")
+            # 전일 픽이 메모리에 남아 실시간 알림이 계속 발사되지 않도록 초기화
+            _set_today_picks([])
             notifier.send_no_picks_notice(macro_result.get("regime", {}))
             return
 
-        today_picks = picks
+        _set_today_picks(picks)
         ai = AIEvaluator()
         market_trend = _get_market_trend()
         summary = ai.generate_market_summary(picks, market_trend)
@@ -448,14 +508,7 @@ def run_morning_analysis():
         except Exception as e:
             logger.warning(f"시뮬레이터 등록 오류: {e}")
 
-        # today_picks 파일 백업 (컨테이너 재시작 대비)
-        import json as _json
-        from pathlib import Path as _Path
-        _today_file = _Path("data/today_picks.json")
-        _today_file.parent.mkdir(exist_ok=True)
-        with open(_today_file, "w") as _f:
-            _json.dump(picks, _f, ensure_ascii=False, default=str)
-
+        # 파일 백업은 _set_today_picks()에서 이미 완료 (컨테이너 재시작 대비)
         logger.info(f"장전 알림 완료: {[p['name'] for p in picks]}")
 
     except Exception as e:
@@ -467,7 +520,7 @@ def run_realtime_check():
     """장중 실시간 목표가/손절/트레일링 체크"""
     from src.api.kis_client import KISClient
 
-    if not today_picks:
+    if not _sync_today_picks():
         return
     kis = KISClient()
     if not kis.is_market_open():
@@ -631,15 +684,17 @@ def run_realtime_check():
             stop   = es.get("stop_loss", 0) or pick.get("ai_eval", {}).get("stop_loss", 0)
 
             if target and price >= target:
-                notifier.send_realtime_alert(
-                    {**pick, "price": price, "change_rate": change},
-                    f"🎯 목표가 도달! ({price:,}원) +{change:.1f}%"
-                )
+                if _mark_realtime_alert(ticker, "target"):
+                    notifier.send_realtime_alert(
+                        {**pick, "price": price, "change_rate": change},
+                        f"🎯 목표가 도달! ({price:,}원) +{change:.1f}%"
+                    )
             elif stop and price <= stop:
-                notifier.send_realtime_alert(
-                    {**pick, "price": price, "change_rate": change},
-                    f"🛑 손절 라인 도달! ({price:,}원) {change:.1f}%"
-                )
+                if _mark_realtime_alert(ticker, "stop"):
+                    notifier.send_realtime_alert(
+                        {**pick, "price": price, "change_rate": change},
+                        f"🛑 손절 라인 도달! ({price:,}원) {change:.1f}%"
+                    )
             time.sleep(0.2)
         except Exception as e:
             logger.debug(f"실시간 체크 오류 ({pick.get('ticker','')}): {e}")
@@ -711,7 +766,7 @@ def run_surge_detection():
 
     try:
         # 오늘 이미 추천된 종목 제외
-        exclude = {p["ticker"] for p in today_picks}
+        exclude = {p["ticker"] for p in _sync_today_picks()}
 
         # 추적 종목도 제외 (중복 알림 방지)
         try:
@@ -902,7 +957,7 @@ def run_simulation_update():
 
 def run_closing_summary():
     """16:00 마감 요약"""
-    if not today_picks:
+    if not _sync_today_picks():
         return
 
     from src.api.kis_client import KISClient
@@ -957,7 +1012,7 @@ def run_afternoon_screening():
         afternoon_picks = screener.run()
 
         # 오전 추천과 중복 제외
-        morning_tickers = {p.get("ticker") for p in today_picks}
+        morning_tickers = {p.get("ticker") for p in _sync_today_picks()}
         new_picks = [p for p in afternoon_picks
                      if p.get("ticker") not in morning_tickers]
 
@@ -988,8 +1043,8 @@ def run_afternoon_screening():
         except Exception as e:
             logger.warning(f"보조 트레일링 등록 오류: {e}")
 
-        # today_picks에 추가
-        today_picks.extend(new_picks)
+        # today_picks에 추가 (날짜 도장 갱신 + 파일 백업 포함)
+        _set_today_picks(today_picks + new_picks)
         logger.info(f"장중 보조 추천: {[p['name'] for p in new_picks]}")
 
     except Exception as e:

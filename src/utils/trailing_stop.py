@@ -112,6 +112,7 @@ class TrailingStopManager:
             self._save()
             return {
                 "signal":        "partial_exit_1",
+                "ticker":        ticker,
                 "name":          s["name"],
                 "current_price": current_price,
                 "entry_price":   entry,
@@ -134,6 +135,7 @@ class TrailingStopManager:
             self._save()
             return {
                 "signal":        "partial_exit_2",
+                "ticker":        ticker,
                 "name":          s["name"],
                 "current_price": current_price,
                 "entry_price":   entry,
@@ -157,6 +159,7 @@ class TrailingStopManager:
             self._save()
             return {
                 "signal": "trailing_activated",
+                "ticker": ticker,
                 "name": s["name"],
                 "current_price": current_price,
                 "trailing_stop": s["trailing_stop"],
@@ -178,6 +181,7 @@ class TrailingStopManager:
                 self.remove(ticker)
                 return {
                     "signal": "trailing_stop",
+                    "ticker": ticker,
                     "name": s["name"],
                     "current_price": current_price,
                     "entry_price": entry,
@@ -200,6 +204,7 @@ class TrailingStopManager:
                     self.remove(ticker)
                     return {
                         "signal": "stop_loss",
+                        "ticker": ticker,
                         "name": s["name"],
                         "current_price": current_price,
                         "entry_price": entry,
@@ -217,6 +222,7 @@ class TrailingStopManager:
                     logger.info(f"손절 경고(장중): {s['name']} {loss_pct:.1f}%")
                     return {
                         "signal": "stop_warning",
+                        "ticker": ticker,
                         "name": s["name"],
                         "current_price": current_price,
                         "entry_price": entry,
@@ -301,6 +307,7 @@ class TrailingStopManager:
                     )
                     signals.append({
                         "signal": "stop_loss_close",
+                        "ticker": ticker,
                         "name": s["name"],
                         "current_price": close_price,
                         "entry_price": entry,

@@ -89,6 +89,9 @@ class StockScreener:
         if not self._check_breadth():
             return []
 
+        # ── 변동성 국면별 ATR 컷 ──────────────────────────
+        analyzed = self._filter_by_volatility(analyzed)
+
         # Step 3: 점수 기반 1차 필터
         logger.info(f"[3/4] 1차 점수 필터링... ({len(analyzed)}개 → 상위 {self.final_picks * 3}개)")
         analyzed.sort(key=lambda x: x["total_score"], reverse=True)
@@ -360,9 +363,10 @@ class StockScreener:
             logger.debug(f"  [{ticker}] 거래량 평균 대비 {_vr:.1f}배 급증 - 추격 제외")
             return None
 
-        # ATR 상한: 기존 픽의 91%가 ATR>6%인 초고변동성 종목이었고,
-        # 이 때문에 entry_calculator의 동적 손절이 100% 7% 캡에 걸려 무력화됐다
-        max_atr_pct = float(os.getenv("MAX_ENTRY_ATR_PCT", "5.0"))
+        # ATR 절대 상한은 '명백한 이상치'만 걸러내는 백스톱으로만 쓴다.
+        # 실질적인 변동성 컷은 run()에서 후보 풀 대비 상대 백분위로 적용한다
+        # (절대값 컷은 시장 변동성 국면이 바뀌면 유니버스를 통째로 비운다).
+        max_atr_pct = float(os.getenv("MAX_ENTRY_ATR_PCT", "20.0"))
         _atr_pct = _ind.get("atr_pct")
         if _atr_pct is not None and _atr_pct > max_atr_pct:
             logger.debug(f"  [{ticker}] ATR {_atr_pct:.1f}% 초고변동성 - 제외")
@@ -435,6 +439,26 @@ class StockScreener:
             ),
             "_candles": candles,
         }
+
+    def _filter_by_volatility(self, analyzed: list[dict]) -> list[dict]:
+        """시장 변동성 국면을 판정하고 국면별 ATR 상한을 적용
+
+        절대 임계값 고정 방식은 국면이 바뀌면 무너진다 (5.0% 상한이
+        2026-08 시장에서 후보 50개 중 2개만 남겨 5일 연속 추천 0개).
+        상세 근거는 src/utils/volatility_regime.py 참조.
+        """
+        if not analyzed or os.getenv("ENTRY_ATR_MODE", "band").lower() == "off":
+            return analyzed
+
+        from src.utils.volatility_regime import apply_volatility_filter
+
+        passed, vol = apply_volatility_filter(
+            analyzed,
+            get_atr=lambda s: s.get("indicators", {}).get("atr_pct"),
+            final_picks=self.final_picks,
+        )
+        self._vol_regime = vol
+        return passed
 
     def _check_breadth(self) -> bool:
         """후보 풀의 20MA 상회 비율로 매매 가능 여부 판단
