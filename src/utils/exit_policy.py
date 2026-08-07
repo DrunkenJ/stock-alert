@@ -152,3 +152,78 @@ def realized_pct_at(entry_price: int, exit_price: int) -> float:
     if not entry_price:
         return 0.0
     return (exit_price - entry_price) / entry_price * 100
+
+
+def simulate_exit(entry_price: int, atr: float, stop_loss: int,
+                  target_price: int, path: list[dict],
+                  cost_pct: float = 0.3, max_hold_days: int = 7) -> dict:
+    """진입 이후 일봉 경로로 청산을 시뮬레이션한다 (분할 익절 + 트레일링 + 손절)
+
+    백테스트가 실제 청산 정책을 그대로 재현하기 위한 함수.
+    엔진에는 원래 단순 -3%/+6% 로직만 있어서, 분할 익절·트레일링·본전 손절 상향이
+    전부 빠져 있었다. 그 상태로는 ATR 연동 모드를 검증할 수 없다.
+
+    trade_simulator._simulate_day 와 동일한 규칙을 따른다:
+      · 저점이 손절가 이하 → 잔여 전량 청산
+      · 고점이 1차 익절가 이상 → 비율만큼 실현 + 손절가를 진입가로 상향
+      · 고점이 2차 익절가 이상 → 비율만큼 실현 + 트레일링 활성화
+      · 트레일링 활성 후 저점이 트레일링가 이하 → 잔여 청산
+      · max_hold_days 초과 → 종가 청산
+    거래비용은 청산 시 1회 차감한다.
+
+    Args:
+        path: 진입 다음날부터의 일봉 [{high, low, close}, ...]
+    Returns:
+        realized_pct / close_reason / holding_days / max_favorable_pct
+    """
+    if not entry_price or not path:
+        return {"realized_pct": 0.0, "close_reason": "no_data",
+                "holding_days": 0, "max_favorable_pct": 0.0}
+
+    p1, p2 = calc_partial_prices(entry_price, target_price, atr)
+    stop = stop_loss
+    high_water = entry_price
+    realized = 0.0
+    p1_done = p2_done = False
+    trailing_active = False
+    trailing_stop = 0
+
+    def _close(exit_price: int, reason: str, day: int) -> dict:
+        remaining = 1.0 - (PARTIAL_1_RATIO if p1_done else 0.0) \
+                        - (PARTIAL_2_RATIO if p2_done else 0.0)
+        total = realized + realized_pct_at(entry_price, exit_price) * remaining - cost_pct
+        return {
+            "realized_pct":      round(total, 3),
+            "close_reason":      reason,
+            "holding_days":      day,
+            "max_favorable_pct": round(realized_pct_at(entry_price, high_water), 2),
+        }
+
+    for day, c in enumerate(path[:max_hold_days], start=1):
+        high, low, close = c["high"], c["low"], c["close"]
+
+        if high > high_water:
+            high_water = high
+            if trailing_active:
+                trailing_stop = calc_trailing_stop(high_water, atr, entry_price)
+
+        # 손절이 익절보다 먼저 (같은 날 둘 다 닿으면 보수적으로 손절 처리)
+        if not trailing_active and low <= stop:
+            return _close(stop, "stop_loss", day)
+
+        if not p1_done and high >= p1:
+            p1_done = True
+            realized += realized_pct_at(entry_price, p1) * PARTIAL_1_RATIO
+            stop = entry_price          # 본전 손절로 상향
+
+        if p1_done and not p2_done and high >= p2:
+            p2_done = True
+            realized += realized_pct_at(entry_price, p2) * PARTIAL_2_RATIO
+            trailing_active = True
+            trailing_stop = calc_trailing_stop(max(high_water, p2), atr, entry_price)
+
+        if trailing_active and low <= trailing_stop:
+            return _close(trailing_stop, "trailing_stop", day)
+
+    last = path[min(len(path), max_hold_days) - 1]
+    return _close(last["close"], "max_hold", min(len(path), max_hold_days))

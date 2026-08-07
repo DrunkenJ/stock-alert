@@ -37,6 +37,7 @@ class BacktestEngine:
         self.stop_loss = 0.97
         self.take_profit = 1.06
         self.holding_days = 3
+        self.max_hold_days = 7      # 분할 익절/트레일링이 붙어 실전(trade_simulator)과 동일
         self.final_picks = 5
 
         if universe:
@@ -214,6 +215,11 @@ class BacktestEngine:
 
                 total = tech_result["score"] * self.tech_weight + supply_score * self.supply_weight
 
+                # 실전 screener 의 진입 과열 필터를 동일하게 적용
+                # (이게 없으면 백테스트가 구 진입 기준을 재현해 검증이 무의미해진다)
+                if not self._passes_entry_filters(tech_result.get("indicators", {})):
+                    continue
+
                 if total >= self.min_score:
                     cur_candle = data["candle_by_date"].get(date)
                     if cur_candle and cur_candle["close"] >= 500:
@@ -223,9 +229,11 @@ class BacktestEngine:
                             "score": total,
                             "tech_score": tech_result["score"],
                             "supply_score": supply_score,
+                            "atr_pct": tech_result.get("indicators", {}).get("atr_pct"),
                             "entry_price": cur_candle["close"],
                         })
 
+            candidates = self._apply_vol_band(candidates)
             candidates.sort(key=lambda x: -x["score"])
             selected = candidates[:self.final_picks]
 
@@ -241,6 +249,27 @@ class BacktestEngine:
 
         return trades
 
+    def _passes_entry_filters(self, ind: dict) -> bool:
+        """screener._analyze_single 의 하드필터와 동일 (env 값 공유)"""
+        checks = [
+            (ind.get("rsi"),         float(os.getenv("MAX_ENTRY_RSI", "70"))),
+            (ind.get("vol_ratio"),   float(os.getenv("MAX_ENTRY_VOL_RATIO", "1.5"))),
+            (ind.get("atr_pct"),     float(os.getenv("MAX_ENTRY_ATR_PCT", "20.0"))),
+            (ind.get("disparity20"), float(os.getenv("MAX_ENTRY_DISPARITY", "10.0"))),
+            (ind.get("ret20"),       float(os.getenv("MAX_ENTRY_RET20", "25.0"))),
+        ]
+        return all(v is None or v <= lim for v, lim in checks)
+
+    def _apply_vol_band(self, candidates: list[dict]) -> list[dict]:
+        """변동성 국면별 ATR 상한 (screener._filter_by_volatility 와 동일)"""
+        if not candidates or os.getenv("ENTRY_ATR_MODE", "band").lower() == "off":
+            return candidates
+        from src.utils.volatility_regime import apply_volatility_filter
+        passed, _ = apply_volatility_filter(
+            candidates, get_atr=lambda c: c.get("atr_pct"),
+            final_picks=self.final_picks)
+        return passed
+
     def _simulate_single_trade(self, candidate: dict, candle_by_date: dict,
                                trading_dates: list, start_idx: int) -> dict | None:
         """단일 종목 매수→청산 시뮬레이션"""
@@ -248,62 +277,81 @@ class BacktestEngine:
         entry_price = 0
         stop = target = 0
 
-        for offset in range(1, self.holding_days + 2):
-            if start_idx + offset >= len(trading_dates):
-                return None
-            date = trading_dates[start_idx + offset]
-            candle = candle_by_date.get(date)
-            if not candle:
-                continue
+        # ── 진입: 익일 시가 ──────────────────────────────
+        if start_idx + 1 >= len(trading_dates):
+            return None
+        entry_date = trading_dates[start_idx + 1]
+        entry_candle = candle_by_date.get(entry_date)
+        if not entry_candle:
+            return None
+        entry_price = entry_candle["open"]
+        if entry_price <= 0:
+            return None
 
-            if entry_date is None:
-                # 익일 시가 매수
-                entry_date = date
-                entry_price = candle["open"]
-                stop = entry_price * self.stop_loss
-                target = entry_price * self.take_profit
-                continue
+        # ── 진입 시점의 손절/익절 (실전 entry_calculator 와 동일 규칙) ──
+        # 예전에는 여기서 고정 -3%/+6% 를 썼다. 분할 익절·트레일링·본전 상향이
+        # 전부 빠져 있어서 백테스트가 실제 청산 전략을 전혀 재현하지 못했고,
+        # ATR 연동 모드 검증이 불가능했다.
+        from src.utils.entry_calculator import _get_rr_by_score
+        from src.utils.exit_policy import calc_stop_distance, simulate_exit
 
-            # 손절/익절 체크 (고가/저가 기준)
-            if candle["low"] <= stop:
-                exit_price = stop
-                exit_reason = "stop_loss"
-            elif candle["high"] >= target:
-                exit_price = target
-                exit_reason = "take_profit"
-            else:
-                continue
+        atr = self._calc_atr(candle_by_date, trading_dates, start_idx)
+        stop_mult, target_mult = _get_rr_by_score(candidate.get("score", 0))
 
-            return {
-                "ticker": candidate["ticker"],
-                "score": candidate["score"],
-                "entry_date": entry_date,
-                "entry_price": entry_price,
-                "exit_date": date,
-                "exit_price": exit_price,
-                "exit_reason": exit_reason,
-                "return_pct": (exit_price - entry_price) / entry_price * 100,
-                "holding_days": offset - 1,
-            }
+        if atr > 0:
+            stop_dist = calc_stop_distance(entry_price, atr, stop_mult)
+            rr = target_mult / stop_mult if stop_mult else 1.5
+            stop   = int(entry_price - stop_dist)
+            target = int(entry_price + stop_dist * rr)
+        else:
+            stop   = int(entry_price * self.stop_loss)
+            target = int(entry_price * self.take_profit)
 
-        # holding_days 초과 → 종가 청산
-        if entry_date:
-            last_idx = min(start_idx + self.holding_days + 1, len(trading_dates) - 1)
-            last_date = trading_dates[last_idx]
-            last_candle = candle_by_date.get(last_date)
-            if last_candle:
-                return {
-                    "ticker": candidate["ticker"],
-                    "score": candidate["score"],
-                    "entry_date": entry_date,
-                    "entry_price": entry_price,
-                    "exit_date": last_date,
-                    "exit_price": last_candle["close"],
-                    "exit_reason": "time_exit",
-                    "return_pct": (last_candle["close"] - entry_price) / entry_price * 100,
-                    "holding_days": self.holding_days,
-                }
-        return None
+        # ── 진입 다음날부터의 경로 ───────────────────────
+        path = []
+        for offset in range(2, len(trading_dates) - start_idx):
+            c = candle_by_date.get(trading_dates[start_idx + offset])
+            if c:
+                path.append(c)
+            if len(path) >= self.max_hold_days:
+                break
+        if not path:
+            return None
+
+        r = simulate_exit(entry_price, atr, stop, target, path,
+                          max_hold_days=self.max_hold_days)
+
+        exit_idx = min(start_idx + 1 + r["holding_days"], len(trading_dates) - 1)
+        return {
+            "ticker": candidate["ticker"],
+            "score": candidate["score"],
+            "entry_date": entry_date,
+            "entry_price": entry_price,
+            "exit_date": trading_dates[exit_idx],
+            "exit_reason": r["close_reason"],
+            "return_pct": r["realized_pct"],
+            "max_favorable_pct": r["max_favorable_pct"],
+            "atr_pct": round(atr / entry_price * 100, 2) if entry_price else 0,
+            "holding_days": r["holding_days"],
+        }
+
+    def _calc_atr(self, candle_by_date: dict, trading_dates: list,
+                  start_idx: int, period: int = 14) -> float:
+        """진입 직전까지의 캔들로 ATR 계산 (미래 데이터 사용 금지)"""
+        window = []
+        for i in range(max(0, start_idx - period), start_idx + 1):
+            c = candle_by_date.get(trading_dates[i])
+            if c:
+                window.append(c)
+        if len(window) < 2:
+            return 0.0
+
+        trs = []
+        for prev, cur in zip(window, window[1:]):
+            trs.append(max(cur["high"] - cur["low"],
+                           abs(cur["high"] - prev["close"]),
+                           abs(cur["low"] - prev["close"])))
+        return sum(trs) / len(trs) if trs else 0.0
 
     def _calculate_metrics(self, trades: list[dict]) -> dict:
         """성과 지표 계산"""
