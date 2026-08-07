@@ -172,6 +172,58 @@ class KISClient:
                 continue
         return sorted(candles, key=lambda x: x["date"])
 
+    def get_daily_ohlcv_long(self, ticker: str, days: int = 300,
+                             max_calls: int = 8) -> list[dict]:
+        """장기 일봉 조회 (100봉 제한 우회)
+
+        inquire-daily-itemchartprice 는 조회 기간을 아무리 넓게 줘도
+        한 번에 100봉까지만 돌려준다. 백테스트가 2개월 남짓밖에 못 보던 원인.
+        조회 종료일을 과거로 밀어가며 여러 번 호출해 이어붙인다.
+        """
+        by_date: dict[str, dict] = {}
+        end = datetime.now()
+
+        for _ in range(max_calls):
+            if len(by_date) >= days:
+                break
+            start = end - timedelta(days=150)   # 100 거래일 ≈ 150 달력일
+            data = self._get(
+                "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                "FHKST03010100",
+                {
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": ticker,
+                    "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
+                    "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
+                    "FID_PERIOD_DIV_CODE": "D",
+                    "FID_ORG_ADJ_PRC": "0",
+                },
+            )
+            rows = data.get("output2", []) or []
+            added = 0
+            for row in rows:
+                try:
+                    d = row["stck_bsop_date"]
+                    if d in by_date:
+                        continue
+                    by_date[d] = {
+                        "date": d,
+                        "open": int(row["stck_oprc"]),
+                        "high": int(row["stck_hgpr"]),
+                        "low": int(row["stck_lwpr"]),
+                        "close": int(row["stck_clpr"]),
+                        "volume": int(row["acml_vol"]),
+                    }
+                    added += 1
+                except (KeyError, ValueError):
+                    continue
+
+            if added == 0:
+                break   # 더 과거 데이터 없음 (상장 이전 등)
+            end = datetime.strptime(min(by_date), "%Y%m%d") - timedelta(days=1)
+
+        return sorted(by_date.values(), key=lambda x: x["date"])
+
     def get_investor_trend(self, ticker: str, days: int = 20) -> dict:
         """투자자별 매매동향 (기관/외국인/개인)"""
         data = self._get(

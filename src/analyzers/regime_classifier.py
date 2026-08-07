@@ -312,3 +312,37 @@ class MarketRegimeClassifier:
         REGIME_CACHE_FILE.parent.mkdir(exist_ok=True)
         with open(REGIME_CACHE_FILE, "w") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
+
+
+def regime_params(regime: dict, base_picks: int = 5,
+                  base_min: float = 4.0) -> dict:
+    """국면 → 스크리닝 파라미터 매핑 (실전 screener·백테스트 엔진 공용)
+
+    이 매핑이 두 곳에 따로 있으면 백테스트가 라이브보다 공격적으로 매매해
+    검증 결과를 신뢰할 수 없게 된다. 여기서만 정의한다.
+    """
+    name = regime.get("regime", "sideways")
+    picks = max(1, min(8, round(base_picks * regime.get("picks_multiplier", 1.0))))
+
+    if name == "bear":
+        min_score = base_min + 2.0
+    elif name == "trending_down":
+        min_score = base_min + 1.0
+    elif name == "sideways":
+        # 실데이터: 횡보장 평균 -5.7%, 고확신 종목만 허용
+        min_score = base_min + 2.0
+    else:
+        min_score = base_min
+
+    # 횡보장 전략: RSI 과매도 반등 우선 (기술적 비중 확대)
+    if name == "sideways":
+        tech_weight, supply_weight = 0.5, 0.5
+    else:
+        tech_weight, supply_weight = 0.4, 0.6
+
+    return {
+        "final_picks":   picks,
+        "min_score":     min_score,
+        "tech_weight":   tech_weight,
+        "supply_weight": supply_weight,
+    }

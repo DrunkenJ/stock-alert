@@ -499,41 +499,23 @@ class StockScreener:
                     "strategy": "기본 전략"}
 
     def _apply_regime_strategy(self, regime: dict):
-        """국면에 따라 스크리너 파라미터 조정"""
-        label    = regime.get("regime_label", "")
-        strategy = regime.get("strategy", "")
-        picks_mult = regime.get("picks_multiplier", 1.0)
+        """국면에 따라 스크리너 파라미터 조정 (매핑은 regime_classifier 단일 정의)"""
+        from src.analyzers.regime_classifier import regime_params
 
-        # 추천 종목 수 조정
-        base_picks = int(os.getenv("FINAL_PICKS", "5"))
-        adjusted   = max(1, min(8, round(base_picks * picks_mult)))
-        self.final_picks = adjusted
-
-        # 최소 점수 기준 조정 (약세장/횡보장에서 더 엄격하게)
-        regime_name = regime.get("regime", "sideways")
-        base_min = float(os.getenv("MIN_FINAL_SCORE", "4.0"))
-        if regime_name == "bear":
-            self.min_score = base_min + 2.0
-        elif regime_name == "trending_down":
-            self.min_score = base_min + 1.0
-        elif regime_name == "sideways":
-            # 실데이터: 횡보장 평균 -5.7%, 고확신 종목만 허용
-            self.min_score = base_min + 2.0
-        else:
-            self.min_score = base_min
-
-        # 횡보장 전략: RSI 과매도 반등 우선 (tech_weight 상향)
-        if regime_name == "sideways":
-            self.tech_weight   = 0.5  # 기술적 분석 비중 확대
-            self.supply_weight = 0.5
-        else:
-            self.tech_weight   = 0.4
-            self.supply_weight = 0.6
+        p = regime_params(
+            regime,
+            base_picks=int(os.getenv("FINAL_PICKS", "5")),
+            base_min=float(os.getenv("MIN_FINAL_SCORE", "4.0")),
+        )
+        self.final_picks   = p["final_picks"]
+        self.min_score     = p["min_score"]
+        self.tech_weight   = p["tech_weight"]
+        self.supply_weight = p["supply_weight"]
 
         logger.info(
-            f"시장 국면 적용: {label} → "
-            f"추천종목={adjusted}개, 최소점수={self.min_score:.1f}, "
-            f"전략={strategy}"
+            f"시장 국면 적용: {regime.get('regime_label','')} → "
+            f"추천종목={self.final_picks}개, 최소점수={self.min_score:.1f}, "
+            f"전략={regime.get('strategy','')}"
         )
 
     def _calc_consecutive_up_adj(self, candles: list) -> float:

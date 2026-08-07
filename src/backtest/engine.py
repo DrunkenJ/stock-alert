@@ -39,6 +39,8 @@ class BacktestEngine:
         self.holding_days = 3
         self.max_hold_days = 7      # 분할 익절/트레일링이 붙어 실전(trade_simulator)과 동일
         self.final_picks = 5
+        self._filter_stats = {}
+        self._score_pass = 0
 
         if universe:
             self.universe = universe
@@ -100,7 +102,7 @@ class BacktestEngine:
 
         for i, ticker in enumerate(self.universe):
             try:
-                candles = self.kis.get_daily_ohlcv(ticker, days=300)
+                candles = self.kis.get_daily_ohlcv_long(ticker, days=300)
                 if len(candles) < 60:
                     continue
 
@@ -159,8 +161,27 @@ class BacktestEngine:
 
         trades = []
 
+        # 라이브와 동일한 국면/브레드스 게이트를 적용한다.
+        # 이게 없으면 백테스트는 약세장에도 매일 5종목씩 사들여
+        # 실전보다 훨씬 공격적인 결과를 낸다.
+        regime_timeline = self._build_regime_timeline(trading_dates)
+        gated_days = {"regime": 0, "breadth": 0}
+        base_picks = self.final_picks
+        base_min   = self.min_score
+
         for idx, date in enumerate(trading_dates):
             candidates = []
+            breadth_above = breadth_total = 0
+
+            # 국면별 파라미터 (추천 종목 수 / 최소 점수 / 가중치)
+            regime = regime_timeline.get(date)
+            if regime:
+                from src.analyzers.regime_classifier import regime_params
+                rp = regime_params(regime, base_picks, base_min)
+                self.final_picks   = rp["final_picks"]
+                self.min_score     = rp["min_score"]
+                self.tech_weight   = rp["tech_weight"]
+                self.supply_weight = rp["supply_weight"]
 
             for ticker, data in price_data.items():
                 past_candles = [c for c in data["candles"] if c["date"] <= date]
@@ -215,12 +236,20 @@ class BacktestEngine:
 
                 total = tech_result["score"] * self.tech_weight + supply_score * self.supply_weight
 
+                # 브레드스는 하드필터 이전에 전수 집계 (유니버스 건강도)
+                _ind = tech_result.get("indicators", {})
+                if _ind.get("ma20"):
+                    breadth_total += 1
+                    if _ind.get("above_ma20"):
+                        breadth_above += 1
+
                 # 실전 screener 의 진입 과열 필터를 동일하게 적용
                 # (이게 없으면 백테스트가 구 진입 기준을 재현해 검증이 무의미해진다)
-                if not self._passes_entry_filters(tech_result.get("indicators", {})):
+                if not self._passes_entry_filters(_ind):
                     continue
 
                 if total >= self.min_score:
+                    self._score_pass += 1
                     cur_candle = data["candle_by_date"].get(date)
                     if cur_candle and cur_candle["close"] >= 500:
                         candidates.append({
@@ -232,6 +261,10 @@ class BacktestEngine:
                             "atr_pct": tech_result.get("indicators", {}).get("atr_pct"),
                             "entry_price": cur_candle["close"],
                         })
+
+            if not self._passes_breadth(breadth_above, breadth_total):
+                gated_days["breadth"] += 1
+                continue
 
             candidates = self._apply_vol_band(candidates)
             candidates.sort(key=lambda x: -x["score"])
@@ -247,18 +280,106 @@ class BacktestEngine:
             if (idx + 1) % 20 == 0:
                 logger.info(f"  시뮬레이션: {idx+1}/{len(trading_dates)}일 ({len(trades)}건)")
 
+        self.final_picks, self.min_score = base_picks, base_min
+        if regime_timeline:
+            from collections import Counter
+            dist = Counter(r.get("regime", "?") for r in regime_timeline.values())
+            logger.info(f"  국면 분포: {dict(dist)}")
+        logger.info(f"  브레드스 미달로 건너뛴 날: {gated_days['breadth']}일 / {len(trading_dates)}일")
+        _st = self._filter_stats
+        _ev = _st.get("평가", 1)
+        logger.info("  진입필터 탈락(중복포함): " + " ".join(
+            f"{k}={v}({v*100//_ev}%)" for k, v in sorted(_st.items(), key=lambda x: -x[1])))
+        # 점수 미달 집계
+        logger.info(f"  점수 통과(필터통과 중): {self._score_pass}/{_st.get('통과',0)}")
+
         return trades
+
+    # ── 국면 / 브레드스 게이트 ────────────────────────────
+    def _build_regime_timeline(self, trading_dates: list) -> dict:
+        """날짜별 시장 국면을 과거 데이터로 재현
+
+        regime_classifier 는 코스피200 ETF(069500) 일봉만 쓰므로 소급 재현이 된다.
+        VIX 는 과거값을 구할 수 없어 중립값(20.0)으로 고정한다 - 실전 대비
+        국면 판정이 다소 관대해질 수 있다는 한계는 남는다.
+        """
+        from src.analyzers.regime_classifier import MarketRegimeClassifier
+
+        clf = MarketRegimeClassifier()
+        try:
+            candles = self.kis.get_daily_ohlcv_long("069500", days=400)
+        except Exception as e:
+            logger.warning(f"국면 재현용 지수 데이터 실패: {e}")
+            return {}
+        if len(candles) < 80:
+            logger.warning("국면 재현용 지수 데이터 부족 - 게이트 비활성")
+            return {}
+
+        timeline = {}
+        for date in trading_dates:
+            past = [c for c in candles if c["date"] <= date]
+            if len(past) < 60:
+                continue
+            try:
+                timeline[date] = clf._analyze(self._index_features(past), vix=20.0)
+            except Exception:
+                continue
+        return timeline
+
+    @staticmethod
+    def _index_features(candles: list) -> dict:
+        """regime_classifier._fetch_kospi_data 와 동일한 피처 계산 (특정 시점 기준)"""
+        closes = [c["close"] for c in candles]
+        highs  = [c["high"]  for c in candles]
+        cur = closes[-1]
+
+        ma5   = sum(closes[-5:]) / 5
+        ma20  = sum(closes[-20:]) / 20
+        ma60  = sum(closes[-60:]) / 60
+        ma20_5ago = sum(closes[-25:-5]) / 20
+        ma_slope = (ma20 - ma20_5ago) / ma20_5ago * 100
+
+        trs = []
+        for i in range(1, len(candles)):
+            h, l, pc = candles[i]["high"], candles[i]["low"], candles[i-1]["close"]
+            trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+        atr20 = sum(trs[-20:]) / 20
+
+        high_52w = max(highs[-252:]) if len(highs) >= 252 else max(highs)
+        return {
+            "current": cur, "ma5": ma5, "ma20": ma20, "ma60": ma60,
+            "ma_slope_pct": ma_slope,
+            "vol_ratio_pct": atr20 / cur * 100,
+            "drawdown_pct": (cur - high_52w) / high_52w * 100,
+            "is_aligned": cur > ma5 > ma20 > ma60,
+            "atr20": atr20,
+        }
+
+    def _passes_breadth(self, above: int, total: int) -> bool:
+        """후보 풀의 20MA 상회 비율 게이트 (screener._check_breadth 와 동일)"""
+        if total < 10:
+            return True
+        pct = above / total * 100
+        return pct >= float(os.getenv("MIN_MARKET_BREADTH", "50"))
 
     def _passes_entry_filters(self, ind: dict) -> bool:
         """screener._analyze_single 의 하드필터와 동일 (env 값 공유)"""
         checks = [
-            (ind.get("rsi"),         float(os.getenv("MAX_ENTRY_RSI", "70"))),
-            (ind.get("vol_ratio"),   float(os.getenv("MAX_ENTRY_VOL_RATIO", "1.5"))),
-            (ind.get("atr_pct"),     float(os.getenv("MAX_ENTRY_ATR_PCT", "20.0"))),
-            (ind.get("disparity20"), float(os.getenv("MAX_ENTRY_DISPARITY", "10.0"))),
-            (ind.get("ret20"),       float(os.getenv("MAX_ENTRY_RET20", "25.0"))),
+            ("RSI",   ind.get("rsi"),         float(os.getenv("MAX_ENTRY_RSI", "70"))),
+            ("거래량비", ind.get("vol_ratio"),   float(os.getenv("MAX_ENTRY_VOL_RATIO", "1.5"))),
+            ("ATR",   ind.get("atr_pct"),     float(os.getenv("MAX_ENTRY_ATR_PCT", "20.0"))),
+            ("이격도",  ind.get("disparity20"), float(os.getenv("MAX_ENTRY_DISPARITY", "10.0"))),
+            ("20일상승", ind.get("ret20"),      float(os.getenv("MAX_ENTRY_RET20", "25.0"))),
         ]
-        return all(v is None or v <= lim for v, lim in checks)
+        self._filter_stats["평가"] = self._filter_stats.get("평가", 0) + 1
+        ok = True
+        for name, v, lim in checks:
+            if v is not None and v > lim:
+                self._filter_stats[name] = self._filter_stats.get(name, 0) + 1
+                ok = False
+        if ok:
+            self._filter_stats["통과"] = self._filter_stats.get("통과", 0) + 1
+        return ok
 
     def _apply_vol_band(self, candidates: list[dict]) -> list[dict]:
         """변동성 국면별 ATR 상한 (screener._filter_by_volatility 와 동일)"""
