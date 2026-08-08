@@ -1056,7 +1056,12 @@ def run_supply_collection():
     try:
         from src.utils.supply_collector import collect_daily_supply
         logger.info("일별 수급 데이터 수집 시작")
-        result = collect_daily_supply(top_n=100)
+        # backfill=True: 호출당 받아오는 30일치를 모두 저장한다.
+        # 누락된 과거 날짜가 있으면 자동으로 메워지므로 재실행에 안전하다.
+        result = collect_daily_supply(
+            top_n=int(os.getenv("SUPPLY_COLLECT_TOP_N", "300")),
+            backfill=True,
+        )
         count = result.get("count", 0)
         logger.info(f"수급 데이터 수집 완료: {count}종목")
 
