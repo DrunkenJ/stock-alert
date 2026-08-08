@@ -41,6 +41,7 @@ class BacktestEngine:
         self.final_picks = 5
         self._filter_stats = {}
         self._score_pass = 0
+        self._breadth_series = []
 
         if universe:
             self.universe = universe
@@ -193,6 +194,14 @@ class BacktestEngine:
                 except Exception:
                     continue
 
+                # 브레드스는 캔들만으로 계산되므로 수급 유무와 무관하게 전수 집계한다.
+                # (수급 있는 종목만 세면 날짜마다 표본 크기가 달라져 임계값 비교가 깨진다)
+                _ind = tech_result.get("indicators", {})
+                if _ind.get("ma20"):
+                    breadth_total += 1
+                    if _ind.get("above_ma20"):
+                        breadth_above += 1
+
                 # 이 날짜까지의 수급 데이터
                 investor_detail = [
                     d for d in data["investor_by_date"].values()
@@ -236,13 +245,6 @@ class BacktestEngine:
 
                 total = tech_result["score"] * self.tech_weight + supply_score * self.supply_weight
 
-                # 브레드스는 하드필터 이전에 전수 집계 (유니버스 건강도)
-                _ind = tech_result.get("indicators", {})
-                if _ind.get("ma20"):
-                    breadth_total += 1
-                    if _ind.get("above_ma20"):
-                        breadth_above += 1
-
                 # 실전 screener 의 진입 과열 필터를 동일하게 적용
                 # (이게 없으면 백테스트가 구 진입 기준을 재현해 검증이 무의미해진다)
                 if not self._passes_entry_filters(_ind):
@@ -262,6 +264,8 @@ class BacktestEngine:
                             "entry_price": cur_candle["close"],
                         })
 
+            if breadth_total >= 10:
+                self._breadth_series.append(breadth_above / breadth_total * 100)
             if not self._passes_breadth(breadth_above, breadth_total):
                 gated_days["breadth"] += 1
                 continue
@@ -292,6 +296,15 @@ class BacktestEngine:
             f"{k}={v}({v*100//_ev}%)" for k, v in sorted(_st.items(), key=lambda x: -x[1])))
         # 점수 미달 집계
         logger.info(f"  점수 통과(필터통과 중): {self._score_pass}/{_st.get('통과',0)}")
+        bs = self._breadth_series
+        if bs:
+            import statistics as _stat
+            srt = sorted(bs)
+            logger.info(
+                f"  브레드스 분포: 최소 {srt[0]:.0f}% / 중앙 {_stat.median(srt):.0f}% / "
+                f"최대 {srt[-1]:.0f}%  (측정 {len(bs)}일)")
+            logger.info("  임계값별 통과일수: " + " ".join(
+                f"{t}%→{sum(1 for v in bs if v >= t)}일" for t in (35, 40, 45, 50, 55, 60)))
 
         return trades
 
