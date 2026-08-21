@@ -105,7 +105,11 @@ def apply_volatility_filter(items: list, get_atr, final_picks: int = 5) -> tuple
     if not items:
         return items, {}
 
-    atrs = [get_atr(it) for it in items]
+    # ATR 0/음수는 "변동성이 없다"가 아니라 "산출 실패"다. 그대로 두면
+    # 어떤 상한도 통과하고, 아래 상대순위 컷에서는 정렬 맨 앞을 차지해
+    # 오히려 우선 선정된다. 판정과 동일하게 결측으로 취급한다.
+    atrs = [a if (a is not None and a > 0) else None
+            for a in (get_atr(it) for it in items)]
     vol = classify_market_volatility(atrs)
 
     if vol["median"] is None:
@@ -120,7 +124,8 @@ def apply_volatility_filter(items: list, get_atr, final_picks: int = 5) -> tuple
     # 상한이 느슨해 풀의 대부분이 통과하는 국면에서는 상대 순위로 한 번 더 조인다
     max_keep = int(len(scored) * MAX_KEEP_RATIO)
     if max_keep and len(passed) > max_keep:
-        passed.sort(key=lambda it: get_atr(it))
+        atr_of = {id(it): a for it, a in scored}
+        passed.sort(key=lambda it: atr_of[id(it)])
         passed = passed[:max_keep]
 
     logger.info(

@@ -471,13 +471,17 @@ class BacktestEngine:
 
     def _calc_atr(self, candle_by_date: dict, trading_dates: list,
                   start_idx: int, period: int = 14) -> float:
-        """진입 직전까지의 캔들로 ATR 계산 (미래 데이터 사용 금지)"""
-        window = []
-        for i in range(max(0, start_idx - period), start_idx + 1):
-            c = candle_by_date.get(trading_dates[i])
-            if c:
-                window.append(c)
-        if len(window) < 2:
+        """신호일까지의 캔들로 ATR 계산 (미래 데이터 사용 금지)
+
+        백테스트 창 안의 날짜만 쓰면 창 초반 며칠은 표본이 1~2개로 쪼그라들어
+        ATR이 0이 되고, 그러면 손절/익절이 실전과 무관한 고정 -3%/+6% 로 떨어진다.
+        종목 캔들은 창 이전까지 받아두므로, 신호일 이전 구간에서 채워 쓴다.
+        """
+        signal_date = trading_dates[start_idx]
+        past = sorted(d for d in candle_by_date if d <= signal_date)
+        window = [candle_by_date[d] for d in past[-(period + 1):]]
+        if len(window) < period + 1:
+            # 표본이 모자란 ATR은 0보다 나쁘다 (좁은 손절폭을 근거처럼 보이게 한다)
             return 0.0
 
         trs = []
