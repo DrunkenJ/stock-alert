@@ -12,15 +12,36 @@ from loguru import logger
 CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range}&interval=1d"
 
 
+# curl_cffi 가 없으면 평범한 requests 로 떨어지는데, 이때 브라우저 헤더가
+# 없으면 야후가 전량 429 로 막는다. 폴백도 최소한의 위장은 하고 나가야 한다.
+_FALLBACK_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://finance.yahoo.com/",
+}
+
+_session = None
+
+
 def _get_session():
-    """curl_cffi 세션 생성 (봇 감지 우회)"""
+    """curl_cffi 세션 생성 (봇 감지 우회). 심볼마다 새로 만들지 않고 재사용한다."""
+    global _session
+    if _session is not None:
+        return _session
+
     try:
         from curl_cffi import requests as cffi_requests
-        return cffi_requests.Session(impersonate="chrome")
+        _session = cffi_requests.Session(impersonate="chrome")
     except ImportError:
         import requests
-        logger.warning("curl_cffi 없음 - requests 폴백")
-        return requests.Session()
+        logger.warning("curl_cffi 없음 - requests 폴백 (브라우저 헤더 사용)")
+        _session = requests.Session()
+        _session.headers.update(_FALLBACK_HEADERS)
+    return _session
 
 
 def fetch_quote(symbol: str, range_period: str = "5d") -> dict | None:
