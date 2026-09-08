@@ -15,8 +15,10 @@ from pathlib import Path
 from loguru import logger
 
 
-ACTIVE_FILE  = Path("data/active_trades.json")
-HISTORY_FILE = Path("data/trade_history.json")
+ACTIVE_FILE   = Path("data/active_trades.json")
+HISTORY_FILE  = Path("data/trade_history.json")
+# 지정가에 닿지 않아 성립하지 않은 추천 (성과 통계에서 빼되 기록은 남긴다)
+UNFILLED_FILE = Path("data/unfilled_picks.json")
 
 # 시뮬레이션 파라미터 (실제 시스템과 동일)
 from src.utils.exit_policy import (  # noqa: F401
@@ -32,8 +34,9 @@ class TradeSimulator:
     """가상 매매 시뮬레이터"""
 
     def __init__(self):
-        self.active  = self._load(ACTIVE_FILE)
-        self.history = self._load(HISTORY_FILE)
+        self.active   = self._load(ACTIVE_FILE)
+        self.history  = self._load(HISTORY_FILE)
+        self.unfilled = self._load(UNFILLED_FILE)
 
     def register_picks(self, picks: list[dict], regime: str = "unknown"):
         """09:10 추천 시 자동 등록"""
@@ -60,7 +63,13 @@ class TradeSimulator:
                 "ticker":           ticker,
                 "name":             pick.get("name", ""),
                 "entry_date":       today,
+                # entry_price 는 '1차 분할매수 지정가'다. detailed_trades.json 의
+                # entry_price(09:10 현재가)와 다른 값이므로 양쪽을 대조할 수 있게
+                # 추천 시점 현재가도 함께 남긴다.
                 "entry_price":      entry_price,
+                "market_price_at_pick": pick.get("price", 0),
+                # 지정가가 실제로 체결됐는지는 진입일 저가를 봐야 안다.
+                "filled":           False,
                 "target_price":     target_price,
                 "stop_loss":        stop_loss,
                 "atr":              atr,
@@ -106,8 +115,8 @@ class TradeSimulator:
             trade = self.active[ticker]
 
             try:
-                # 오늘 캔들
-                candles = kis_client.get_daily_ohlcv(ticker, days=2)
+                # 진입일 캔들까지 확인해야 지정가 체결 여부를 판정할 수 있다
+                candles = kis_client.get_daily_ohlcv(ticker, days=7)
                 if not candles:
                     continue
                 today_candle = candles[-1]
@@ -115,6 +124,28 @@ class TradeSimulator:
                 high  = today_candle["high"]
                 low   = today_candle["low"]
                 close = today_candle["close"]
+
+                # ── 지정가 체결 판정 ──────────────────────────────
+                # entry_price 는 현재가가 아니라 눌림목을 기다리는 지정가다.
+                # 체결 여부를 보지 않으면, 갭상승 종목을 '갭 이전 가격'에 산
+                # 것으로 처리해 버린다(갭 7%+ 는 기준가가 전일종가로 바뀐다).
+                # 그날 그 가격에 거래된 적이 없는데 거기서 수익률을 재게 된다.
+                if not trade.get("filled", True):
+                    ed = trade["entry_date"].replace("-", "")
+                    entry_candle = next((c for c in candles if c["date"] == ed), None)
+                    if entry_candle is None:
+                        # 진입일 캔들을 못 구하면 판정 자체가 불가능하다.
+                        # 체결로 넘겨 짚기보다 다음 호출로 미룬다.
+                        continue
+                    if entry_candle["low"] > trade["entry_price"]:
+                        logger.info(
+                            f"시뮬 미체결 취소: {trade['name']} "
+                            f"지정가 {trade['entry_price']:,} < 진입일 저가 {entry_candle['low']:,}"
+                        )
+                        self.unfilled.setdefault(trade["entry_date"], []).append(trade)
+                        del self.active[ticker]
+                        continue
+                    trade["filled"] = True
 
                 # 시뮬레이션 진행
                 result = self._simulate_day(trade, high, low, close, today)
@@ -159,6 +190,7 @@ class TradeSimulator:
 
         self._save(ACTIVE_FILE, self.active)
         self._save(HISTORY_FILE, self.history)
+        self._save(UNFILLED_FILE, self.unfilled)
         return closed_today
 
     def _simulate_day(self, trade: dict, high: int, low: int,

@@ -39,7 +39,10 @@ def record_detailed_trade(pick: dict, candles: list = None,
             "name":              pick.get("name", ""),
             "entry_date":        today,
             "entry_time":        entry_time or datetime.now().strftime("%H:%M"),
+            # 추천 시점의 '현재가'다. trade_history.json 쪽 entry_price 는
+            # 1차 분할매수 지정가라 값이 다르다. 둘을 대조할 수 있게 함께 남긴다.
             "entry_price":       pick.get("price", 0),
+            "planned_entry":     pick.get("entry_strategy", {}).get("split_1st"),
             "sector":            pick.get("sector", ""),
             "market":            pick.get("market", ""),
             "market_cap":        pick.get("market_cap", 0),
