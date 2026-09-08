@@ -140,11 +140,34 @@ class StockScreener:
         except Exception as e:
             logger.warning(f"뉴스 필터 오류: {e}")
 
+        # ── 갭 과열 제외 ────────────────────────────────
+        # entry_calculator 는 갭 7%+ 를 "매수 보류(reject)"로 판정하면서도
+        # 지정가 기준을 전일종가로 바꿀 뿐 추천에서 빼지는 않았다. 판정을 읽는
+        # 코드가 어디에도 없어서 사실상 효력이 없었고, 그 사이 갭 이전 가격에
+        # 산 것처럼 기록돼 성과가 부풀었다. 여기서 실제로 걷어낸다.
+        # 슬라이스보다 앞에 두어, 보류 종목이 추천 자리를 잡아먹지 않게 한다.
+        gap_rejected = []
+        try:
+            from src.utils.entry_calculator import gap_status_of
+            kept = []
+            for pick in pre_filtered:
+                status, gap_pct = gap_status_of(pick)
+                if status == "reject":
+                    pick["_gap_pct"] = gap_pct
+                    gap_rejected.append(pick)
+                    logger.info(f"  [{pick['ticker']}] {pick['name']} "
+                                f"시가 갭 +{gap_pct:.1f}% - 매수 보류")
+                else:
+                    kept.append(pick)
+            pre_filtered = kept
+        except Exception as e:
+            logger.warning(f"갭 과열 판정 오류: {e}")
+
         result = pre_filtered[:self.final_picks]
 
         # ── 추적 종목 자동 등록 ──────────────────────────
         # ① 추천 초과 종목 (6위 이하, 점수 높은 것)
-        # ② 갭 과열로 제외된 종목은 entry_calculator에서 처리
+        # ② 갭 과열로 보류된 종목 (눌림목 오면 재진입 후보)
         try:
             from src.utils.watchlist import get_watchlist_manager
             wm = get_watchlist_manager()
@@ -158,8 +181,20 @@ class StockScreener:
                     entry_price=pick.get("price", 0),
                     reason=f"추천 초과 (점수 {pick.get('final_score',0):.1f})"
                 )
+            for pick in gap_rejected:
+                wm.add(
+                    ticker=pick["ticker"],
+                    name=pick["name"],
+                    score=pick.get("final_score", 0),
+                    entry_price=pick.get("price", 0),
+                    reason=f"갭 +{pick.get('_gap_pct', 0):.1f}% 보류 (눌림목 대기)"
+                )
         except Exception as e:
             logger.debug(f"추적 자동 등록 오류: {e}")
+
+        if gap_rejected:
+            logger.info(f"갭 과열 보류 {len(gap_rejected)}종목: "
+                        f"{[p['name'] for p in gap_rejected]} → 추적 등록")
 
         if not result:
             logger.warning(f"최소 점수({self.min_score}) 충족 종목 없음 - 알림 스킵")

@@ -4,12 +4,15 @@
 - 지정가 매수가 계산 (슬리피지 방지)
 - 분할매수 3단계 진입가 제시 (평단 최적화)
 """
+import os
+
 from loguru import logger
 
 
 # 파라미터
 GAP_WARNING_PCT = 3.0    # 갭상승 경고 기준 (%)
-GAP_REJECT_PCT = 7.0     # 갭상승 매수 보류 기준 (%)
+# 갭상승 매수 보류 기준 (%). 크게 올리면 사실상 이 필터를 끄는 효과.
+GAP_REJECT_PCT = float(os.getenv("GAP_REJECT_PCT", "7.0"))
 LIMIT_ORDER_DISC = 0.003  # 지정가 할인율 (시가 대비 -0.3%)
 SPLIT_2ND_DISC = 0.015   # 2차 매수 할인율 (-1.5%)
 SPLIT_3RD_DISC = 0.030   # 3차 매수 할인율 (-3.0%)
@@ -141,6 +144,26 @@ def calculate_entry(pick: dict, candles: list[dict] = None) -> dict:
     )
 
     return pick
+
+
+def gap_status_of(pick: dict) -> tuple[str, float]:
+    """추천 후보의 시가 갭 판정 (매수 보류 여부를 선정 단계에서 쓰기 위한 것)
+
+    calculate_entry 안에서만 쓰이던 판정을 밖으로 꺼냈다. 기존에는 reject 로
+    판정해도 지정가 기준만 전일종가로 바꿀 뿐 추천에서는 빠지지 않아서,
+    "매수 보류"가 아무 효력이 없었다.
+
+    Returns: (gap_status, gap_pct)
+    """
+    price = pick.get("price", 0)
+    if price <= 0:
+        return "normal", 0.0
+    open_price = pick.get("open_price", price) or price
+    prev_close = _estimate_prev_close(pick)
+    if prev_close <= 0:
+        return "normal", 0.0
+    gap_pct = (open_price - prev_close) / prev_close * 100
+    return _classify_gap(gap_pct), gap_pct
 
 
 def calculate_entries(picks: list[dict]) -> list[dict]:
