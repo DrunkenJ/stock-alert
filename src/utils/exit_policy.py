@@ -187,6 +187,7 @@ def simulate_exit(entry_price: int, atr: float, stop_loss: int,
     p1_done = p2_done = False
     trailing_active = False
     trailing_stop = 0
+    trailing_since = None
 
     def _close(exit_price: int, reason: str, day: int) -> dict:
         remaining = 1.0 - (PARTIAL_1_RATIO if p1_done else 0.0) \
@@ -221,8 +222,11 @@ def simulate_exit(entry_price: int, atr: float, stop_loss: int,
             realized += realized_pct_at(entry_price, p2) * PARTIAL_2_RATIO
             trailing_active = True
             trailing_stop = calc_trailing_stop(max(high_water, p2), atr, entry_price)
+            trailing_since = day
 
-        if trailing_active and low <= trailing_stop:
+        # 활성화된 당일에는 판정하지 않는다. 일봉 하나로 익절→트레일링을 잇달아
+        # 처리하면 "먼저 올랐다가 나중에 빠졌다"는 가장 유리한 순서를 가정하게 된다.
+        if trailing_active and trailing_since != day and low <= trailing_stop:
             return _close(trailing_stop, "trailing_stop", day)
 
     last = path[min(len(path), max_hold_days) - 1]

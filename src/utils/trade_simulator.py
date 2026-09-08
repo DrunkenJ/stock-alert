@@ -212,7 +212,13 @@ class TradeSimulator:
             pct = realized_pct_at(entry, trade["partial_2_price"])
             trade["realized_pct"]  += pct * PARTIAL_2_RATIO
             trade["trailing_active"] = True
-            trade["trailing_stop"]   = calc_trailing_stop(trade["partial_2_price"], trade.get("atr", 0), entry)
+            # 트레일링은 '그날 실제 고점'에 걸어야 한다. partial_2_price 로 걸면
+            # 장중 +20% 까지 간 종목도 트레일링가가 진입가×1.08×0.97 에 묶여,
+            # 어떤 종목이든 청산 수익률이 똑같은 값으로 찍힌다.
+            trade["trailing_stop"] = calc_trailing_stop(
+                max(trade["high_price"], trade["partial_2_price"]),
+                trade.get("atr", 0), entry)
+            trade["trailing_since"] = today
             trade["events"].append({
                 "date":  today,
                 "event": "2차 익절 (30% 매도)",
@@ -221,7 +227,11 @@ class TradeSimulator:
             })
 
         # 트레일링 스탑 발동
-        if trade["trailing_active"] and low <= trade["trailing_stop"]:
+        # 활성화된 당일에는 판정하지 않는다. 일봉 하나로는 고점과 저점의 선후를
+        # 알 수 없는데, 같은 캔들로 익절→트레일링을 잇달아 처리하면 "먼저 올랐다가
+        # 나중에 빠졌다"는 가장 유리한 순서를 매번 가정하게 된다.
+        if trade["trailing_active"] and trade.get("trailing_since") != today \
+                and low <= trade["trailing_stop"]:
             remaining = max(0.0, 1.0 - PARTIAL_1_RATIO - PARTIAL_2_RATIO)
             pct = (trade["trailing_stop"] - entry) / entry * 100
             trade["realized_pct"]  += pct * remaining
