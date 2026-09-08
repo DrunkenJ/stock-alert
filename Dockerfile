@@ -1,6 +1,8 @@
 # ── Synology DS218+ 최적화 Dockerfile ──────────────────
-# DS218+: Intel Celeron J3355 (x86_64) 
-FROM python:3.11-slim-bullseye
+# DS218+: Intel Celeron J3355 (x86_64)
+# bullseye 는 2026-09-08 자로 보안 저장소 Release 가 만료돼 apt-get update 가
+# 통째로 실패한다. 파이썬 버전은 3.11 그대로 두고 베이스만 bookworm 으로 올린다.
+FROM python:3.11-slim-bookworm
 
 # 시스템 의존성
 RUN apt-get update && apt-get install -y \

@@ -2,7 +2,12 @@ version: "3.8"
 
 services:
   stock-alert:
-    build: .
+    build:
+      context: .
+      # 이 NAS 는 도커 브리지 네트워크에서 DNS 가 동작하지 않아 빌드 중 pip 가
+      # "Temporary failure in name resolution" 으로 죽는다. 호스트 네트워크로
+      # 빌드해야 pypi 에 닿는다. (컨테이너 실행도 이미 network_mode: host 다)
+      network: host
     container_name: stock-alert-bot
     restart: unless-stopped
     network_mode: host
