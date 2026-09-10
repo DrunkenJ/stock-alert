@@ -52,14 +52,17 @@ trading day: `06:30` US market close data → `07:00` overnight news scan → `0
 analysis → `09:05` stock DB rebuild → `09:07` macro judgment (risk-on/off) → `09:10` morning
 screening + picks (the main event) → `13:00` afternoon supplementary screening → every
 `interval` (default 30) min: realtime target/stop/trailing checks + watchlist timing checks
-→ every 5 min: surge detection → `15:35` closing stop-loss check → `16:00` closing summary →
-`16:05` supply/demand data collection → `16:10` simulation P&L update → Friday `16:30` weekly
+→ every 5 min: surge detection → `15:35` closing stop-loss check → `15:40` after-market check snapshot → `16:00`
+closing summary (regular-session close) → `20:02` after-market check compare → `20:05` supply/demand
+data collection + universe breadth → `20:10` simulation P&L update → Friday `20:20` weekly
 review + strategy learning.
 
-`today_picks` and `macro_result` are in-memory module-level globals shared across scheduled
-jobs within one process run; `today_picks` is also persisted to `data/today_picks.json` and
-restored on container restart (`_restore_today_picks`) since a NAS reboot must not lose the
-day's picks.
+The job bodies live in `src/jobs/` (premarket / screening / intraday / closing); `main.py`
+only registers them and runs the loop. State shared across jobs within one process run
+(`today_picks`, `macro_result`, the realtime-alert dedupe set) lives in
+`src/utils/session_state.py` behind accessors, not module globals; `today_picks` is also
+persisted to `data/today_picks.json` and restored on container restart
+(`restore_today_picks`) since a NAS reboot must not lose the day's picks.
 
 ### Screening pipeline (`src/analyzers/screener.py`)
 
@@ -101,7 +104,7 @@ separate modules coordinated from `main.py`, not one class:
 - `utils/failure_analyzer.py` reads the accumulated simulated trade history and produces
   `data/learned_rules.json`, which `screener.py` applies on the *next* run — this is the
   bot's self-adjusting feedback loop, driven weekly by `utils/weekly_review.py` (Friday
-  16:30 job) but read every screening run.
+  20:20 job) but read every screening run.
 
 ### External integrations
 

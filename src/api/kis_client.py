@@ -201,6 +201,29 @@ class KISClient:
         _warn_row_failures(ticker, "일봉", len(data.get("output2", [])), bad)
         return sorted(candles, key=lambda x: x["date"])
 
+    def get_official_close(self, ticker: str, date: str | None = None) -> dict | None:
+        """정규장 공식 종가와 등락률 (일봉 기준)
+
+        장 마감 후 '현재가'를 종가로 쓰면 안 된다. 2026-09-14 부터 KRX 애프터마켓이
+        16:00~20:00 접속매매로 열려, 현재가가 저녁 체결가를 따라 움직일 수 있다.
+        일봉 종가가 애프터마켓에 영향받지 않는지는 utils/aftermarket_check 가 매일 점검한다.
+
+        date: YYYYMMDD (기본 오늘). 그날 체결된 캔들이 없으면 None.
+        개장 전에는 KIS 가 오늘 날짜 행을 기준가(=전일 종가)·거래량 0 으로 내려주므로,
+        거래량이 0 인 행은 종가로 보지 않는다 (휴장일·거래정지도 같은 이유로 None).
+        """
+        date = date or datetime.now().strftime("%Y%m%d")
+        candles = self.get_daily_ohlcv(ticker, days=10)
+        for i in range(len(candles) - 1, -1, -1):
+            if candles[i]["date"] == date:
+                if not candles[i].get("volume"):
+                    return None
+                close = candles[i]["close"]
+                prev = candles[i - 1]["close"] if i > 0 else 0
+                rate = round((close - prev) / prev * 100, 2) if prev else 0.0
+                return {"close": close, "change_rate": rate}
+        return None
+
     def get_daily_ohlcv_long(self, ticker: str, days: int = 300,
                              max_calls: int = 8) -> list[dict]:
         """장기 일봉 조회 (100봉 제한 우회)

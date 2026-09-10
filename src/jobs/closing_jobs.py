@@ -1,4 +1,7 @@
-"""장 마감 후 잡 (15:35 종가손절 / 16:00 요약 / 16:05 수급 / 16:10 시뮬 / 금 16:30 리뷰)
+"""장 마감 후 잡 (15:35 종가손절 / 16:00 요약 / 20:05 수급 / 20:10 시뮬 / 금 20:20 리뷰)
+
+수집·시뮬 잡은 KRX 애프터마켓(2026-09-14~, 16:00~20:00)이 끝난 뒤에 돈다. 장후 체결이
+거래량과 투자자 수급에 더해지므로(2026-09-10 실측) 16시대에 읽으면 미확정 값이다.
 
 main.py 에서 옮겨왔다. 등록과 실행 순서는 main.setup_schedule 이 계속 관장한다.
 """
@@ -47,7 +50,7 @@ def run_closing_stop_check():
 
 
 def run_simulation_update():
-    """16:10 시뮬레이션 진행 업데이트 (마감가 기준)"""
+    """20:10 시뮬레이션 진행 업데이트 (애프터마켓 종료 후 확정 일봉 기준)"""
     from src.api.kis_client import KISClient
     kis = KISClient()
     try:
@@ -104,7 +107,7 @@ def run_simulation_update():
 
 
 def run_closing_summary():
-    """16:00 마감 요약"""
+    """16:00 마감 요약 (정규장 종가 기준)"""
     if not _sync_today_picks():
         return
 
@@ -112,37 +115,32 @@ def run_closing_summary():
     kis = KISClient()
     notifier = DiscordNotifier()
 
+    # 종가는 '현재가'가 아니라 일봉의 공식 종가로 읽는다. 16:00 은 KRX 애프터마켓
+    # (2026-09-14~) 개장 시각이라, 스케줄러가 몇 초만 늦어도 현재가가 저녁 첫 체결가일 수 있다.
+    # (예전에는 같은 종목의 현재가를 알림용·저장용으로 두 번씩 조회했다)
     results = []
     for pick in _sync_today_picks():
         try:
-            current = kis.get_stock_price(pick["ticker"])
-            results.append({"close_price": current["price"]})
-        except Exception:
-            results.append({"close_price": pick["price"]})
+            oc = kis.get_official_close(pick["ticker"])
+            if oc:
+                results.append({"close_price": oc["close"], "change_rate": oc["change_rate"]})
+                continue
+            cur = kis.get_stock_price(pick["ticker"])
+            logger.warning(f"[{pick['ticker']}] 당일 일봉 없음 - 현재가로 대체")
+            results.append({"close_price": cur["price"], "change_rate": cur["change_rate"]})
+        except Exception as e:
+            logger.warning(f"[{pick.get('ticker')}] 종가 조회 실패 - 추천가로 대체: {e}")
+            results.append({"close_price": pick["price"], "change_rate": 0.0})
 
     notifier.send_closing_summary(_sync_today_picks(), results)
-
-    # 성과 추적용 저장 - results에 종가 포함
-    from src.api.kis_client import KISClient as _KIS
-    _kis = _KIS()
-    full_results = []
-    for pick, result in zip(_sync_today_picks(), results):
-        try:
-            current = _kis.get_stock_price(pick["ticker"])
-            full_results.append({
-                "close_price": current["price"],
-                "change_rate": current["change_rate"],
-            })
-        except Exception:
-            full_results.append(result)
-    save_results(full_results)
+    save_results(results)
     logger.info("마감 요약 전송 완료")
 
 
 
 
 def run_supply_collection():
-    """16:05 일별 수급 데이터 자동 수집"""
+    """20:05 일별 수급 데이터 자동 수집 (애프터마켓 종료 후 확정 수급)"""
     try:
         from src.utils.supply_collector import collect_daily_supply
         logger.info("일별 수급 데이터 수집 시작")
@@ -182,7 +180,7 @@ def run_supply_collection():
 
 
 def run_weekly_review_auto():
-    """금요일 16:30 주간 자동 리뷰"""
+    """금요일 20:20 주간 자동 리뷰"""
     try:
         from src.utils.weekly_review import run_weekly_review
         from src.notifier.discord_review import send_weekly_report
@@ -220,3 +218,25 @@ def _get_market_trend() -> str:
         return f"코스피 {direction} ({idx['change_rate']:+.2f}%)"
     except Exception:
         return "시장 데이터 조회 불가"
+
+
+def run_aftermarket_snapshot():
+    """15:40 애프터마켓 반영 점검 - 정규장 확정 직후 스냅샷"""
+    if os.getenv("AFTERMARKET_CHECK", "1") == "0":
+        return
+    try:
+        from src.utils.aftermarket_check import snapshot
+        snapshot("close")
+    except Exception as e:
+        logger.warning(f"애프터마켓 점검 스냅샷 실패: {e}")
+
+
+def run_aftermarket_compare():
+    """20:02 애프터마켓 반영 점검 - 종료 직후 스냅샷을 찍어 15:40 과 비교"""
+    if os.getenv("AFTERMARKET_CHECK", "1") == "0":
+        return
+    try:
+        from src.utils.aftermarket_check import compare
+        compare("close", "evening")
+    except Exception as e:
+        logger.warning(f"애프터마켓 점검 비교 실패: {e}")
