@@ -27,6 +27,7 @@ class SupplyDemandAnalyzer:
         score = 0
         signals = []
 
+        sum_days = investor_data.get("sum_days", 5)
         foreign_net = investor_data.get("foreign_net", 0)
         inst_net = investor_data.get("inst_net", 0)
         foreign_consec = investor_data.get("foreign_consecutive", 0)
@@ -42,10 +43,10 @@ class SupplyDemandAnalyzer:
         # 시총 대비 비중 기준 (폴백: 절대 주식 수)
         if f_ratio is not None:
             big, mid, big_sell = f_ratio > 0.5, f_ratio > 0.15, f_ratio < -0.5
-            f_desc = f"5일 합산 시총 대비 {f_ratio:+.2f}%"
+            f_desc = f"{sum_days}일 합산 시총 대비 {f_ratio:+.2f}%"
         else:
             big, mid, big_sell = foreign_net > 500_000, foreign_net > 100_000, foreign_net < -500_000
-            f_desc = f"5일 합산 {foreign_net:+,}주"
+            f_desc = f"{sum_days}일 합산 {foreign_net:+,}주"
 
         if foreign_net > 0:
             # 순매수 강도
@@ -92,10 +93,10 @@ class SupplyDemandAnalyzer:
         # ── 기관 순매수 분석 ──────────────────────
         if i_ratio is not None:
             i_big, i_mid, i_big_sell = i_ratio > 0.3, i_ratio > 0.1, i_ratio < -0.3
-            i_desc = f"5일 합산 시총 대비 {i_ratio:+.2f}%"
+            i_desc = f"{sum_days}일 합산 시총 대비 {i_ratio:+.2f}%"
         else:
             i_big, i_mid, i_big_sell = inst_net > 300_000, inst_net > 50_000, inst_net < -300_000
-            i_desc = f"5일 합산 {inst_net:+,}주"
+            i_desc = f"{sum_days}일 합산 {inst_net:+,}주"
 
         if inst_net > 0:
             if i_big:
@@ -163,7 +164,9 @@ class SupplyDemandAnalyzer:
 
         # ── 외국인 보유 비중 변화 ────────────────
         # (가격 데이터 활용: 외국인 순매수량 / 전체 거래량 비율)
-        total_vol = price_data.get("volume", 1)
+        # foreign_net 은 sum_days 일 누적인데 예전에는 '하루' 거래량으로 나눴다.
+        # 단위가 어긋나 임계값 0.3 이 사실상 무의미하게 헐거웠다.
+        total_vol = price_data.get("volume", 1) * max(sum_days, 1)
         if total_vol > 0:
             foreign_vol_ratio = abs(foreign_net) / total_vol if foreign_net > 0 else 0
             if foreign_vol_ratio > 0.3:
@@ -183,6 +186,7 @@ class SupplyDemandAnalyzer:
                 "foreign_consecutive": foreign_consec,
                 "inst_consecutive": inst_consec,
                 "is_double_buy": foreign_net > 0 and inst_net > 0,
+                "sum_days": sum_days,
                 "foreign_cap_ratio": round(f_ratio, 3) if f_ratio is not None else None,
                 "inst_cap_ratio": round(i_ratio, 3) if i_ratio is not None else None,
             }

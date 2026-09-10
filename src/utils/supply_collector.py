@@ -7,7 +7,7 @@
 """
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from loguru import logger
 
@@ -83,6 +83,8 @@ def collect_daily_supply(top_n: int = 300, backfill: bool = True) -> dict:
         backfill: True면 30일 전체 저장, False면 당일만
     """
     today = datetime.now().strftime("%Y%m%d")
+    # 백필 구간(30일)보다 넉넉히 잡되, 수년 전 행은 확실히 버린다
+    stale_before = (datetime.now() - timedelta(days=60)).strftime("%Y%m%d")
     SUPPLY_DIR.mkdir(parents=True, exist_ok=True)
 
     universe = build_universe(top_n)
@@ -115,6 +117,11 @@ def collect_daily_supply(top_n: int = 300, backfill: bool = True) -> dict:
                 date = d.get("date")
                 if not date:
                     continue
+                # 상장폐지 종목은 KIS 가 마지막 거래 시점(수년 전) 행을 그대로
+                # 돌려준다. 그대로 쓰면 2023년 날짜 파일이 생긴다.
+                # (실제로 셀트리온헬스케어 091990 이 2023-11~12 파일 22개를 만들었다)
+                if date < stale_before:
+                    continue
                 rec = {
                     "name":    stock.get("name", ""),
                     "foreign": d.get("foreign", 0),
@@ -127,8 +134,14 @@ def collect_daily_supply(top_n: int = 300, backfill: bool = True) -> dict:
                         "price":       stock.get("price", 0),
                         "volume":      stock.get("volume", 0),
                         "change_rate": stock.get("change_rate", 0),
+                        # 예전에는 days=30 으로 받은 30일 합산이 _5d 필드에
+                        # 들어가 있었다. 이제 집계 창은 호출처와 무관하게 고정된다.
+                        "sum_days":    investor.get("sum_days", 0),
                         "foreign_5d":  investor.get("foreign_net", 0),
                         "inst_5d":     investor.get("inst_net", 0),
+                        "indiv_5d":    investor.get("indiv_net", 0),
+                        "foreign_20d": investor.get("foreign_20d", 0),
+                        "inst_20d":    investor.get("inst_20d", 0),
                         "foreign_consecutive": investor.get("foreign_consecutive", 0),
                         "inst_consecutive":    investor.get("inst_consecutive", 0),
                     })

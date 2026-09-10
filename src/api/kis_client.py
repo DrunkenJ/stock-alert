@@ -15,6 +15,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# 수급 합산 창(일). 임계값과 라벨이 모두 5일 기준으로 쓰여 있어 기본을 5로 둔다.
+# 20으로 되돌리려면 .env 한 줄이면 된다.
+SUPPLY_SUM_DAYS = int(os.getenv("SUPPLY_SUM_DAYS", "5"))
+
 
 class KISClient:
     """한국투자증권 REST API 클라이언트 (싱글톤)"""
@@ -225,54 +229,71 @@ class KISClient:
         return sorted(by_date.values(), key=lambda x: x["date"])
 
     def get_investor_trend(self, ticker: str, days: int = 20) -> dict:
-        """투자자별 매매동향 (기관/외국인/개인)"""
+        """투자자별 매매동향 (기관/외국인/개인)
+
+        days 는 '조회 구간'만 정한다. 합산·연속일 같은 집계값은 호출처와 무관하게
+        고정 창으로 계산해 내보낸다. 예전에는 days 가 곧 합산 구간이어서
+        screener(20) / collector(30) / backtest(30) 가 서로 다른 값을 재면서
+        같은 임계값에 집어넣고 있었다 (백테스트가 라이브와 다른 것을 측정).
+
+        · foreign_net / inst_net : SUPPLY_SUM_DAYS(기본 5)일 합산. 점수 임계값이 쓰는 값
+        · foreign_20d / inst_20d : 20일 합산 (표시·참고용)
+        · *_consecutive          : 최신일부터 이어지는 순매수 연속일
+        """
         data = self._get(
             "/uapi/domestic-stock/v1/quotations/inquire-investor",
             "FHKST01010900",
             {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker},
         )
-        rows = data.get("output", [])
 
-        result = {
-            "foreign_net": 0,
-            "inst_net": 0,
-            "indiv_net": 0,
-            "foreign_consecutive": 0,
-            "inst_consecutive": 0,
-            "detail": [],
-        }
-
-        foreign_consec, inst_consec = 0, 0
-        for i, row in enumerate(rows[:days]):
+        # 장중에는 당일 행이 빈 문자열로 온다. 집계에서 빼야지, 연속일이
+        # 당일에서 끊긴 것처럼 계산되면 안 된다.
+        # 먼저 유효 행만 걸러낸 뒤에 자른다. 자르고 거르면 빈 당일 행 때문에
+        # 20일 합산이 19일치가 되는 식으로 하루씩 새어나간다.
+        parsed = []
+        for row in data.get("output", []):
             try:
-                foreign = int(row.get("frgn_ntby_qty", 0))
-                inst = int(row.get("orgn_ntby_qty", 0))
-                indiv = int(row.get("indv_ntby_qty", 0))
-                result["foreign_net"] += foreign
-                result["inst_net"] += inst
-                result["indiv_net"] += indiv
-
-                if foreign > 0:
-                    foreign_consec += 1
-                else:
-                    foreign_consec = 0
-                if inst > 0:
-                    inst_consec += 1
-                else:
-                    inst_consec = 0
-
-                result["detail"].append({
-                    "date": row.get("stck_bsop_date", ""),
-                    "foreign": foreign,
-                    "inst": inst,
-                    "indiv": indiv,
+                parsed.append({
+                    "date":    row.get("stck_bsop_date", ""),
+                    "foreign": int(row["frgn_ntby_qty"]),
+                    "inst":    int(row["orgn_ntby_qty"]),
+                    # 개인은 indv 가 아니라 prsn 이다. 오타 탓에 계속 0이 저장됐다.
+                    "indiv":   int(row["prsn_ntby_qty"]),
                 })
-            except (ValueError, TypeError):
+            except (KeyError, ValueError, TypeError):
                 continue
 
-        result["foreign_consecutive"] = foreign_consec
-        result["inst_consecutive"] = inst_consec
-        return result
+        detail = parsed[:days]
+
+        def _streak(key: str) -> int:
+            """최신일부터 순매수가 끊길 때까지의 일수
+
+            응답이 최신→과거 순인데 예전에는 그 순서로 훑으며 양수면 +1,
+            아니면 0으로 리셋해서, 최종값이 '창의 가장 오래된 쪽 연속 구간'이
+            되어 있었다. 방향이 정반대였다.
+            """
+            n = 0
+            for d in parsed:
+                if d[key] > 0:
+                    n += 1
+                else:
+                    break
+            return n
+
+        def _sum(key: str, n: int) -> int:
+            return sum(d[key] for d in parsed[:n])
+
+        return {
+            "foreign_net":  _sum("foreign", SUPPLY_SUM_DAYS),
+            "inst_net":     _sum("inst",    SUPPLY_SUM_DAYS),
+            "indiv_net":    _sum("indiv",   SUPPLY_SUM_DAYS),
+            "sum_days":     SUPPLY_SUM_DAYS,
+            "foreign_20d":  _sum("foreign", 20),
+            "inst_20d":     _sum("inst",    20),
+            "foreign_consecutive": _streak("foreign"),
+            "inst_consecutive":    _streak("inst"),
+            "detail": detail,
+        }
 
     # 시가총액 상위 랭킹의 시장 구분 코드
     MCAP_KOSPI = "0001"
