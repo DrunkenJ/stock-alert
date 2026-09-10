@@ -108,13 +108,8 @@ class PremarketAnalyzer:
         return result
 
     def _load_cache(self) -> dict:
-        if not PREMARKET_CACHE.exists():
-            return {}
-        try:
-            with open(PREMARKET_CACHE) as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        from src.utils.json_state import load_json_state
+        return load_json_state(PREMARKET_CACHE, {}, "premarket_cache")
 
     def _fetch_us_market(self) -> dict:
         """미국 시장 데이터 수집 (Yahoo chart API 직접 호출)"""

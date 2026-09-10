@@ -167,13 +167,8 @@ class FailurePatternAnalyzer:
         return self.rules
 
     def _load_rules(self) -> dict:
-        if not LEARNED_RULES_FILE.exists():
-            return {}
-        try:
-            with open(LEARNED_RULES_FILE) as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        from src.utils.json_state import load_json_state
+        return load_json_state(LEARNED_RULES_FILE, {}, "learned_rules")
 
     def _save_rules(self):
         LEARNED_RULES_FILE.parent.mkdir(exist_ok=True)

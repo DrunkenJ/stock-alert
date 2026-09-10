@@ -22,13 +22,8 @@ SELL_SIGNAL_THRESHOLD = 2  # 이 이상 신호 시 매도 권고
 
 def load_holdings() -> dict:
     """보유 종목 로드"""
-    if not HOLDINGS_FILE.exists():
-        return {}
-    try:
-        with open(HOLDINGS_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    from src.utils.json_state import load_json_state
+    return load_json_state(HOLDINGS_FILE, {}, "holdings")
 
 
 def save_holdings(holdings: dict):

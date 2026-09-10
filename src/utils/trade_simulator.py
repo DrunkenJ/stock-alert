@@ -185,8 +185,10 @@ class TradeSimulator:
                     closed_today.append(trade)
                     self.history.setdefault(today, []).append(trade)
                     del self.active[ticker]
-                except Exception:
-                    pass
+                except Exception as e:
+                    # 조용히 넘기면 이 거래는 보유일이 지나도 영영 청산되지 않고
+                    # active 에 남아 통계를 오염시킨다.
+                    logger.warning(f"강제 청산 실패 ({ticker}) - 다음 갱신에 재시도: {e}")
 
         self._save(ACTIVE_FILE, self.active)
         self._save(HISTORY_FILE, self.history)
@@ -385,13 +387,8 @@ class TradeSimulator:
         }
 
     def _load(self, path: Path) -> dict:
-        if not path.exists():
-            return {}
-        try:
-            with open(path) as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        from src.utils.json_state import load_json_state
+        return load_json_state(path, {}, path.name)
 
     def _save(self, path: Path, data: dict):
         path.parent.mkdir(exist_ok=True)

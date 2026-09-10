@@ -180,13 +180,8 @@ class SurgeDetector:
             return "weak"
 
     def _load_history(self) -> dict:
-        if not SURGE_HISTORY_FILE.exists():
-            return {}
-        try:
-            with open(SURGE_HISTORY_FILE) as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        from src.utils.json_state import load_json_state
+        return load_json_state(SURGE_HISTORY_FILE, {}, "surge_history")
 
     def _save_history(self):
         SURGE_HISTORY_FILE.parent.mkdir(exist_ok=True)

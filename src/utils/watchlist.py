@@ -34,13 +34,8 @@ RSI_MAX      = 62.0
 
 
 def load_watchlist() -> dict:
-    if not WATCHLIST_FILE.exists():
-        return {}
-    try:
-        with open(WATCHLIST_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    from src.utils.json_state import load_json_state
+    return load_json_state(WATCHLIST_FILE, {}, "watchlist")
 
 
 def save_watchlist(wl: dict):

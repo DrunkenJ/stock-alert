@@ -43,84 +43,13 @@ logger.add(sys.stdout, format="<green>{time:HH:mm:ss}</green> | <level>{level}</
 logger.add("logs/app.log", rotation="1 day", retention="30 days", level="DEBUG")
 
 KST = pytz.timezone("Asia/Seoul")
-today_picks: list[dict] = []
-today_picks_date: str = ""
-macro_result: dict = {"judgment": "neutral", "recommended_picks": 5}
-
-
-def _set_today_picks(picks: list[dict]):
-    """오늘 추천 종목 갱신 + 파일 백업 (날짜 도장 포함)"""
-    global today_picks, today_picks_date
-    import json as _json
-    from pathlib import Path as _Path
-    today_picks = picks
-    today_picks_date = datetime.now().strftime("%Y-%m-%d")
-    try:
-        _today_file = _Path("data/today_picks.json")
-        _today_file.parent.mkdir(exist_ok=True)
-        with open(_today_file, "w") as _f:
-            _json.dump(picks, _f, ensure_ascii=False, default=str)
-    except Exception as e:
-        logger.debug(f"today_picks 저장 실패: {e}")
-
-
-def _sync_today_picks() -> list[dict]:
-    """날짜가 바뀌었으면 전일 추천 종목을 비운다.
-
-    스케줄러는 재시작 없이 몇 주씩 도는 프로세스라, 픽이 0개인 날에도
-    메모리의 today_picks가 그대로 남으면 지난 종목의 목표가/손절가로
-    실시간 알림이 매일 반복 발사된다.
-    """
-    global today_picks, today_picks_date
-    today = datetime.now().strftime("%Y-%m-%d")
-    if today_picks and today_picks_date != today:
-        logger.info(
-            f"전일({today_picks_date or '미상'}) 추천 종목 정리: "
-            f"{[p.get('name','') for p in today_picks]}"
-        )
-        today_picks = []
-        today_picks_date = today
-    return today_picks
-
-
-_realtime_alerted: set = set()
-
-
-def _mark_realtime_alert(ticker: str, kind: str) -> bool:
-    """실시간 알림 중복 방지 - 같은 종목/트리거는 하루 1회만 발송
-
-    목표가·손절가는 한 번 도달하면 그 뒤로 계속 조건을 만족하므로,
-    체크 주기(기본 15분)마다 같은 알림이 반복 발사되는 것을 막는다.
-    Returns: True면 발송해도 되는 첫 알림
-    """
-    today = datetime.now().strftime("%Y-%m-%d")
-    key = f"{today}_{ticker}_{kind}"
-    if key in _realtime_alerted:
-        return False
-    # 전일 기록만 정리 (같은 날 다른 종목 기록은 유지)
-    for old in [k for k in _realtime_alerted if not k.startswith(today)]:
-        _realtime_alerted.discard(old)
-    _realtime_alerted.add(key)
-    return True
-
-
-def _restore_today_picks():
-    """컨테이너 재시작 시 오늘 추천 종목 복구"""
-    global today_picks, today_picks_date
-    import json as _json
-    from pathlib import Path as _Path
-    from datetime import datetime as _dt
-    _today_file = _Path("data/today_picks.json")
-    if _today_file.exists():
-        try:
-            mtime = _dt.fromtimestamp(_today_file.stat().st_mtime)
-            if mtime.date() == _dt.now().date():
-                with open(_today_file) as _f:
-                    today_picks = _json.load(_f)
-                today_picks_date = _dt.now().strftime("%Y-%m-%d")
-                logger.info(f"오늘 추천 종목 복구: {[p.get('name','') for p in today_picks]}")
-        except Exception as e:
-            logger.debug(f"today_picks 복구 실패: {e}")
+from src.utils.session_state import (
+    set_today_picks as _set_today_picks,
+    sync_today_picks as _sync_today_picks,
+    restore_today_picks as _restore_today_picks,
+    mark_realtime_alert as _mark_realtime_alert,
+    get_macro_result, set_macro_result,
+)
 
 
 # ─────────────────────────────────────────
@@ -327,11 +256,11 @@ def run_premarket_analysis():
 
 def run_macro_analysis():
     """09:07 거시경제 판단"""
-    global macro_result
     logger.info("거시경제 판단 시작")
     try:
         agent = MacroAgent()
         macro_result = agent.analyze()
+        set_macro_result(macro_result)
 
         # 국면 분류 실행 (거시 판단과 연계)
         try:
@@ -436,17 +365,17 @@ def run_macro_analysis():
     except Exception as e:
         logger.exception(f"거시 판단 오류: {e}")
         macro_result = {"judgment": "neutral", "recommended_picks": int(os.getenv("FINAL_PICKS", "5"))}
+        set_macro_result(macro_result)
 
 
 def run_morning_analysis():
     """09:10 장전 분석 및 알림"""
-    global today_picks
     notifier = DiscordNotifier()
     logger.info("장전 분석 시작")
     try:
         # 거시 판단 반영
-        judgment = macro_result.get("judgment", "neutral")
-        recommended = macro_result.get("recommended_picks", int(os.getenv("FINAL_PICKS", "5")))
+        judgment = get_macro_result().get("judgment", "neutral")
+        recommended = get_macro_result().get("recommended_picks", int(os.getenv("FINAL_PICKS", "5")))
 
         screener = StockScreener()
         screener.final_picks = recommended  # 거시 판단에 따라 종목 수 조정
@@ -456,7 +385,7 @@ def run_morning_analysis():
             logger.warning("추천 종목 없음")
             # 전일 픽이 메모리에 남아 실시간 알림이 계속 발사되지 않도록 초기화
             _set_today_picks([])
-            notifier.send_no_picks_notice(macro_result.get("regime", {}))
+            notifier.send_no_picks_notice(get_macro_result().get("regime", {}))
             return
 
         _set_today_picks(picks)
@@ -604,7 +533,7 @@ def run_realtime_check():
                     wm = get_watchlist_manager()
                     # 청산가를 기준으로 추적 등록 (재조정 기다림)
                     _pick_ref = next(
-                        (p for p in today_picks if p.get("name") == name), {}
+                        (p for p in _sync_today_picks() if p.get("name") == name), {}
                     )
                     _score = _pick_ref.get("final_score", 0)
                     if _score >= 5.0:  # 점수 좋은 종목만 재추적
@@ -667,7 +596,7 @@ def run_realtime_check():
         logger.debug(f"트레일링 체크 오류: {e}")
 
     # ── 기존 실시간 체크 (트레일링 미활성 종목) ───────────
-    for pick in today_picks:
+    for pick in _sync_today_picks():
         try:
             ticker  = pick["ticker"]
             current = kis.get_stock_price(ticker)
@@ -965,20 +894,20 @@ def run_closing_summary():
     notifier = DiscordNotifier()
 
     results = []
-    for pick in today_picks:
+    for pick in _sync_today_picks():
         try:
             current = kis.get_stock_price(pick["ticker"])
             results.append({"close_price": current["price"]})
         except Exception:
             results.append({"close_price": pick["price"]})
 
-    notifier.send_closing_summary(today_picks, results)
+    notifier.send_closing_summary(_sync_today_picks(), results)
 
     # 성과 추적용 저장 - results에 종가 포함
     from src.api.kis_client import KISClient as _KIS
     _kis = _KIS()
     full_results = []
-    for pick, result in zip(today_picks, results):
+    for pick, result in zip(_sync_today_picks(), results):
         try:
             current = _kis.get_stock_price(pick["ticker"])
             full_results.append({
@@ -1044,7 +973,7 @@ def run_afternoon_screening():
             logger.warning(f"보조 트레일링 등록 오류: {e}")
 
         # today_picks에 추가 (날짜 도장 갱신 + 파일 백업 포함)
-        _set_today_picks(today_picks + new_picks)
+        _set_today_picks(_sync_today_picks() + new_picks)
         logger.info(f"장중 보조 추천: {[p['name'] for p in new_picks]}")
 
     except Exception as e:
@@ -1180,8 +1109,22 @@ def main():
     setup_schedule()
 
     logger.info("스케줄러 루프 시작")
+    # 잡 하나가 예외를 흘리면 run_pending() 이 그대로 전파해 루프가 끝나고
+    # 프로세스가 죽는다. 등록된 잡들이 각자 try 를 갖고 있긴 하지만 그건 잡
+    # 본문 안의 얘기일 뿐, 진입 이전(인자 평가·지연 임포트)에서 터지면 못 막는다.
+    consecutive_errors = 0
     while True:
-        schedule.run_pending()
+        try:
+            schedule.run_pending()
+            consecutive_errors = 0
+        except Exception as e:
+            consecutive_errors += 1
+            logger.exception(f"스케줄 실행 중 예외 (연속 {consecutive_errors}회): {e}")
+            if consecutive_errors >= 20:
+                # 같은 자리에서 계속 터지는 중이다. 조용히 도는 것보다
+                # 죽어서 재시작되는 편이 낫다.
+                logger.critical("스케줄 예외가 연속 20회 - 프로세스를 종료한다")
+                raise
         time.sleep(30)
 
 

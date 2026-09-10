@@ -214,13 +214,8 @@ def check_stage3_readiness():
 
 
 def _load() -> dict:
-    if not DETAILED_FILE.exists():
-        return {}
-    try:
-        with open(DETAILED_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    from src.utils.json_state import load_json_state
+    return load_json_state(DETAILED_FILE, {}, "detailed_trades")
 
 
 def _save(data: dict):
@@ -230,13 +225,8 @@ def _save(data: dict):
 
 
 def _load_state() -> dict:
-    if not ALERT_STATE_FILE.exists():
-        return {}
-    try:
-        with open(ALERT_STATE_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    from src.utils.json_state import load_json_state
+    return load_json_state(ALERT_STATE_FILE, {}, "alert_state")
 
 
 def _save_state(state: dict):

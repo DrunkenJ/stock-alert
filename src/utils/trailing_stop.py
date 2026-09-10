@@ -322,13 +322,8 @@ class TrailingStopManager:
     # ── 내부 ─────────────────────────────────────────────
 
     def _load(self) -> dict:
-        if TRAILING_FILE.exists():
-            try:
-                with open(TRAILING_FILE) as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {}
+        from src.utils.json_state import load_json_state
+        return load_json_state(TRAILING_FILE, {}, "trailing_stops")
 
     def _save(self):
         TRAILING_FILE.parent.mkdir(exist_ok=True)

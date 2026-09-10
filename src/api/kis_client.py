@@ -20,6 +20,22 @@ load_dotenv()
 SUPPLY_SUM_DAYS = int(os.getenv("SUPPLY_SUM_DAYS", "5"))
 
 
+def _warn_row_failures(ticker: str, what: str, total: int, bad: int) -> None:
+    """응답 행 파싱 실패를 알린다
+
+    한두 행이 깨지는 건 흔하지만, 전 행이 깨지면 그건 KIS 가 필드 이름을
+    바꿨다는 뜻이다. 예전에는 그래도 빈 리스트만 조용히 돌아와서, 데이터가
+    없는 것인지 파싱이 실패한 것인지 구분할 수 없었다.
+    """
+    if not bad:
+        return
+    tag = f"[{ticker}] " if ticker else ""
+    if total and bad >= total:
+        logger.error(f"{tag}{what} 응답 {total}행 전부 파싱 실패 - KIS 응답 형식 변경 의심")
+    else:
+        logger.debug(f"{tag}{what} 응답 {bad}/{total}행 파싱 실패")
+
+
 class KISClient:
     """한국투자증권 REST API 클라이언트 (싱글톤)"""
 
@@ -168,6 +184,7 @@ class KISClient:
             },
         )
         candles = []
+        bad = 0
         for row in data.get("output2", []):
             try:
                 candles.append({
@@ -179,7 +196,9 @@ class KISClient:
                     "volume": int(row["acml_vol"]),
                 })
             except (KeyError, ValueError):
+                bad += 1
                 continue
+        _warn_row_failures(ticker, "일봉", len(data.get("output2", [])), bad)
         return sorted(candles, key=lambda x: x["date"])
 
     def get_daily_ohlcv_long(self, ticker: str, days: int = 300,
@@ -211,6 +230,7 @@ class KISClient:
             )
             rows = data.get("output2", []) or []
             added = 0
+            bad = 0
             for row in rows:
                 try:
                     d = row["stck_bsop_date"]
@@ -226,8 +246,10 @@ class KISClient:
                     }
                     added += 1
                 except (KeyError, ValueError):
+                    bad += 1
                     continue
 
+            _warn_row_failures(ticker, "일봉(장기)", len(rows), bad)
             if added == 0:
                 break   # 더 과거 데이터 없음 (상장 이전 등)
             end = datetime.strptime(min(by_date), "%Y%m%d") - timedelta(days=1)
@@ -329,7 +351,9 @@ class KISClient:
             },
         )
         stocks = []
-        for row in data.get("output", [])[:top_n]:
+        bad = 0
+        rows_raw = data.get("output", [])[:top_n]
+        for row in rows_raw:
             try:
                 stocks.append({
                     "ticker": row["mksc_shrn_iscd"],
@@ -342,7 +366,9 @@ class KISClient:
                     "market": "KOSDAQ" if market == self.MCAP_KOSDAQ else "KOSPI",
                 })
             except (KeyError, ValueError):
+                bad += 1
                 continue
+        _warn_row_failures("", "랭킹", len(rows_raw), bad)
         return stocks
 
     def get_volume_ranking(self, market: str = "J", top_n: int = 50) -> list[dict]:
@@ -365,7 +391,9 @@ class KISClient:
             },
         )
         stocks = []
-        for row in data.get("output", [])[:top_n]:
+        bad = 0
+        rows_raw = data.get("output", [])[:top_n]
+        for row in rows_raw:
             try:
                 stocks.append({
                     "ticker": row["mksc_shrn_iscd"],
@@ -376,7 +404,9 @@ class KISClient:
                     "vol_increase_rate": float(row.get("vol_inrt", 0)),
                 })
             except (KeyError, ValueError):
+                bad += 1
                 continue
+        _warn_row_failures("", "랭킹", len(rows_raw), bad)
         return stocks
 
     def get_foreign_buying_ranking(self, top_n: int = 30) -> list[dict]:
