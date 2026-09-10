@@ -104,7 +104,13 @@ def analyze_stock_full(ticker: str, name: str) -> dict:
     try:
         from src.utils.position_sizer import calculate_position_sizes
         from src.utils.entry_calculator import calculate_entry
-        sized = calculate_position_sizes([stock_info])
+        try:
+            from src.utils.trade_simulator import get_simulator
+            _open = get_simulator().open_exposure_pct(exclude_tickers={stock_info.get("ticker")})
+        except Exception as e:
+            logger.debug(f"보유 비중 조회 실패 - 0% 로 계산: {e}")
+            _open = 0.0
+        sized = calculate_position_sizes([stock_info], open_exposure_pct=_open)
         stock_info = calculate_entry(sized[0])
     except Exception as e:
         logger.debug(f"포지션/매수가 계산 오류: {e}")
@@ -1067,9 +1073,19 @@ def create_bot() -> StockBot:
 
         # 포지션 사이징 재계산
         from src.utils.position_sizer import calculate_position_sizes
-        picks = calculate_position_sizes(picks)
+        # 오늘 픽은 이미 보유분(시뮬 active)에 들어 있으니 빼고 센다 (이중 계산 방지)
+        try:
+            from src.utils.trade_simulator import get_simulator
+            _open = get_simulator().open_exposure_pct(
+                exclude_tickers={p.get("ticker") for p in picks})
+        except Exception as e:
+            logger.debug(f"보유 비중 조회 실패 - 0% 로 계산: {e}")
+            _open = 0.0
+        picks = calculate_position_sizes(picks, open_exposure_pct=_open)
 
         lines = [f"💰 **총 투자금액: {capital:,}원** 기준 배분\n"]
+        if _open:
+            lines.append(f"_(이전 추천 보유분 {_open:.0f}% 를 뺀 남은 한도 안에서 배분)_\n")
         total_amount = 0
         for p in picks:
             pct = p.get("position_pct", 0)

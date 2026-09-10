@@ -13,11 +13,15 @@ from loguru import logger
 # 상한을 100 으로 두면 예전처럼 '무조건 100% 배분' 동작으로 되돌아간다.
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "40"))
 MIN_POSITION_PCT = float(os.getenv("MIN_POSITION_PCT", "5"))
+# 보유 중인 포지션까지 합친 총 투입 상한 (%). 예전에는 그날 픽만 보고 비중을
+# 매겨서, 종목당 40% 권고가 며칠 쌓이면 투자금의 200% 까지 불어났다
+# (2026-09-10: 보유 5종목 × 40%).
+MAX_TOTAL_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_EXPOSURE_PCT", "100"))
 SCORE_WEIGHT = 0.5        # 점수 가중 비율 (0~1, 나머지는 변동성역가중)
 VOL_WEIGHT = 0.5          # 변동성 역가중 비율
 
 
-def calculate_position_sizes(picks: list[dict]) -> list[dict]:
+def calculate_position_sizes(picks: list[dict], open_exposure_pct: float = 0.0) -> list[dict]:
     """
     추천 종목별 포지션 비율 계산
 
@@ -84,13 +88,24 @@ def calculate_position_sizes(picks: list[dict]) -> list[dict]:
     # ── 4. 최대/최소 비중 제한 적용 ──────────────────────
     final_pcts = _apply_constraints(raw_pcts, n)
 
+    # ── 4-1. 보유분을 뺀 남은 한도 안으로 축소 ────────────
+    unscaled = list(final_pcts)        # 라벨은 축소 전 상대 비중으로 매긴다
+    room = max(0.0, MAX_TOTAL_EXPOSURE_PCT - open_exposure_pct)
+    total_new = sum(final_pcts)
+    if total_new > room:
+        scale = room / total_new if total_new else 0.0
+        final_pcts = [p * scale for p in final_pcts]
+        logger.info(f"  보유 {open_exposure_pct:.0f}% → 남은 한도 {room:.0f}% 안으로 "
+                    f"신규 비중 축소 (×{scale:.2f})")
+
     # ── 5. 결과 적용 ──────────────────────────────────────
     result = []
     for i, pick in enumerate(picks):
         pct = final_pcts[i]
         pick = dict(pick)
         pick["position_pct"] = round(pct, 1)
-        pick["position_label"] = _get_label(pct, n)
+        pick["position_label"] = "⛔ 한도 초과" if pct < 0.05 else _get_label(unscaled[i], n)
+        pick["open_exposure_pct"] = round(open_exposure_pct, 1)
         pick["score_weight"] = round(score_weights[i] * 100, 1)
         pick["vol_weight"] = round(vol_weights[i] * 100, 1)
         result.append(pick)
@@ -163,8 +178,12 @@ def _apply_constraints(raw_pcts: list[float], n: int) -> list[float]:
 
 
 def _get_label(pct: float, n: int) -> str:
-    """비중에 따른 레이블"""
-    equal = 100 / n
+    """비중에 따른 레이블
+
+    기준이 되는 '균등 비중'은 종목당 상한을 넘을 수 없다. 100/n 을 그대로 쓰면
+    2종목이 상한 40% 씩 받았을 때 균등(50%) 대비 80% 로 보여 '비중축소'가 붙는다.
+    """
+    equal = min(100 / n, MAX_POSITION_PCT)
     if pct >= equal * 1.3:
         return "🔴 집중"
     elif pct >= equal * 1.1:

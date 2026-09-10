@@ -155,6 +155,13 @@ def run_supply_collection():
         count = result.get("count", 0)
         logger.info(f"수급 데이터 수집 완료: {count}종목")
 
+        # 다음 날 아침 브레드스 게이트가 쓸 전 유니버스 브레드스 (전일 종가 기준)
+        try:
+            from src.utils.market_breadth import compute_universe_breadth
+            compute_universe_breadth()
+        except Exception as e:
+            logger.warning(f"전 유니버스 브레드스 산출 실패 - 내일은 후보 풀 기준으로 대체: {e}")
+
         # Discord 알림 (간단히)
         notifier = DiscordNotifier()
         notifier._send({

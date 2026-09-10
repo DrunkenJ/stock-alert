@@ -70,6 +70,8 @@ class TradeSimulator:
                 "market_price_at_pick": pick.get("price", 0),
                 # 지정가가 실제로 체결됐는지는 진입일 저가를 봐야 안다.
                 "filled":           False,
+                # 권고 비중. 보유분 합산(open_exposure_pct)에 쓴다.
+                "position_pct":     pick.get("position_pct"),
                 "target_price":     target_price,
                 "stop_loss":        stop_loss,
                 "atr":              atr,
@@ -282,6 +284,27 @@ class TradeSimulator:
             return {"closed": True}
 
         return {"closed": False}
+
+    def open_exposure_pct(self, exclude_tickers: set | None = None) -> float:
+        """보유 중인 시뮬 포지션의 현재 투입 비중 합 (%)
+
+        권고 비중 × 남은 수량 비율. 1차/2차 익절로 이미 판 몫은 빠진다.
+        비중 기록이 없는 예전 거래는 종목당 상한(MAX_POSITION_PCT)으로 본다.
+        아직 체결 확인 전인 지정가 주문도 자금을 묶으므로 포함한다.
+        """
+        from src.utils.position_sizer import MAX_POSITION_PCT
+        exclude = exclude_tickers or set()
+        total = 0.0
+        for tk, t in self.active.items():
+            if tk in exclude:
+                continue
+            pct = t.get("position_pct")
+            if pct is None:
+                pct = MAX_POSITION_PCT
+            remaining = 1.0 - (PARTIAL_1_RATIO if t.get("partial_1_done") else 0.0) \
+                            - (PARTIAL_2_RATIO if t.get("partial_2_done") else 0.0)
+            total += pct * max(0.0, remaining)
+        return total
 
     def get_statistics(self, days: int = 30) -> dict:
         """최근 N일 통계 (주간 리뷰용)"""

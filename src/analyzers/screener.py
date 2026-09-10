@@ -113,8 +113,8 @@ class StockScreener:
 
         final.sort(key=lambda x: x["final_score"], reverse=True)
 
-        # 최소 점수 기준 적용
-        qualified = [s for s in final if s["final_score"] >= self.min_score]
+        # 최소 점수 기준 적용 (AI 반영 전·후 둘 다)
+        qualified = self._apply_score_floor(final)
 
         # ── 섹터 다변화 필터 ───────────────────────────────
         try:
@@ -126,9 +126,6 @@ class StockScreener:
         except Exception as e:
             logger.warning(f"섹터 필터 오류: {e}")
             pre_filtered = qualified
-
-        # ── 시장 비중 조절 (코스피/코스닥 균형) ────────────
-        pre_filtered = self._apply_market_balance(pre_filtered)
 
         # ── 뉴스 감성 필터 ────────────────────────────────
         try:
@@ -162,6 +159,11 @@ class StockScreener:
             pre_filtered = kept
         except Exception as e:
             logger.warning(f"갭 과열 판정 오류: {e}")
+
+        # ── 시장 비중 조절 (코스피/코스닥) ─────────────────
+        # 뉴스·갭 필터가 뺄 만큼 뺀 다음에 고른다. 예전처럼 앞에서 final_picks 개로
+        # 잘라두면, 뒤 필터가 한 종목을 뺐을 때 그 자리를 채울 후보가 남지 않는다.
+        pre_filtered = self._apply_market_balance(pre_filtered)
 
         result = pre_filtered[:self.final_picks]
 
@@ -203,7 +205,13 @@ class StockScreener:
         # 포지션 사이징 적용
         try:
             from src.utils.position_sizer import calculate_position_sizes
-            result = calculate_position_sizes(result)
+            try:
+                from src.utils.trade_simulator import get_simulator
+                open_pct = get_simulator().open_exposure_pct()
+            except Exception as e:
+                logger.warning(f"보유 비중 조회 실패 - 보유분 0% 로 계산: {e}")
+                open_pct = 0.0
+            result = calculate_position_sizes(result, open_exposure_pct=open_pct)
         except Exception as e:
             logger.warning(f"포지션 사이징 오류: {e}")
 
@@ -509,30 +517,72 @@ class StockScreener:
         self._vol_regime = vol
         return passed
 
+    def _apply_score_floor(self, final: list[dict]) -> list[dict]:
+        """최소 점수 하한 - AI 반영 후(final_score)와 반영 전(total_score) 둘 다
+
+        백테스트는 이 하한을 AI 반영 전 점수에 건다. 라이브는 AI 가 섞인
+        final_score 에만 걸어서, 백테스트가 한 번도 사지 않은 저점수 종목을
+        AI 점수로 끌어올려 사고 있었다(2026-09 환산 3.8~5.0 종목들).
+        두 탈락 사유 모두 로그를 남긴다. 예전에는 final_score 미달이 조용히 빠져서
+        AI 가 '매수'를 준 종목이 왜 사라졌는지 알 수 없었다.
+        APPLY_PRE_AI_FLOOR=0 이면 예전 동작(final_score 만).
+        """
+        pre_ai_floor = os.getenv("APPLY_PRE_AI_FLOOR", "1") != "0"
+        qualified = []
+        for s in final:
+            tag = f"[{s.get('ticker', '')}] {s.get('name', '')}"
+            if s["final_score"] < self.min_score:
+                logger.info(f"  {tag} 최종 점수 {s['final_score']:.2f} < {self.min_score:.1f} - 제외")
+                continue
+            if pre_ai_floor and s.get("total_score", 0) < self.min_score:
+                logger.info(f"  {tag} AI 전 점수 {s.get('total_score', 0):.1f} < {self.min_score:.1f} - 제외")
+                continue
+            qualified.append(s)
+        return qualified
+
     def _check_breadth(self) -> bool:
-        """후보 풀의 20MA 상회 비율로 매매 가능 여부 판단
+        """시장 브레드스(20MA 상회 비율)로 매매 가능 여부 판단
 
         비율이 임계치 미만이면 개별 종목 점수와 무관하게 당일 픽을 중단한다.
         (하락장에서 롱온리 추격 매수를 막는 최종 안전장치)
+
+        기본은 전 유니버스 기준(전일 종가, 16:05 산출)이다. 예전에는 랭킹으로 뽑힌
+        후보 34~37개만 셌는데, 원래 강한 종목들이라 50~85% 가 나왔다(같은 기간
+        전 유니버스 12~28%). 임계값 50 은 전 유니버스 기준 백테스트에서 고른 값이라
+        라이브 게이트가 사실상 거의 막지 않고 있었다.
+        BREADTH_POPULATION=candidates 면 예전 방식.
         """
-        total = getattr(self, "_breadth_total", 0)
-        above = getattr(self, "_breadth_above", 0)
-        if total < 10:
-            logger.debug(f"브레드스 표본 부족({total}개) - 게이트 미적용")
-            return True
-
-        breadth = above / total * 100
         min_breadth = float(os.getenv("MIN_MARKET_BREADTH", "50"))
-        self._breadth_pct = breadth
+        population = os.getenv("BREADTH_POPULATION", "universe").lower()
 
+        ub = None
+        if population == "universe":
+            from src.utils.market_breadth import load_universe_breadth
+            ub = load_universe_breadth()
+            if not ub:
+                logger.warning("전 유니버스 브레드스 없음/오래됨 - 후보 풀 기준으로 대체")
+
+        if ub:
+            breadth, above, total = ub["pct"], ub["above"], ub["total"]
+            basis = f"전 유니버스, {ub['date']} 종가"
+        else:
+            total = getattr(self, "_breadth_total", 0)
+            above = getattr(self, "_breadth_above", 0)
+            if total < 10:
+                logger.debug(f"브레드스 표본 부족({total}개) - 게이트 미적용")
+                return True
+            breadth = above / total * 100
+            basis = "후보 풀"
+
+        self._breadth_pct = breadth
         if breadth < min_breadth:
             logger.warning(
-                f"시장 브레드스 {breadth:.0f}% (기준 {min_breadth:.0f}%) - "
-                f"후보 {total}개 중 20MA 위 {above}개뿐. 당일 추천 중단"
+                f"시장 브레드스 {breadth:.0f}% ({basis}, 기준 {min_breadth:.0f}%) - "
+                f"{total}개 중 20MA 위 {above}개. 당일 추천 중단"
             )
             return False
 
-        logger.info(f"  시장 브레드스: {breadth:.0f}% ({above}/{total}) - 통과")
+        logger.info(f"  시장 브레드스: {breadth:.0f}% ({above}/{total}, {basis}) - 통과")
         return True
 
     def _get_regime(self) -> dict:
@@ -729,58 +779,59 @@ class StockScreener:
         return {"skip": False}
 
     def _apply_market_balance(self, picks: list[dict]) -> list[dict]:
-        """
-        시장 비중 조절 (코스피 60% / 코스닥 40% 권장)
-        - 약세장에서는 코스닥 비중 자동 축소
-        - 상승장에서는 그대로 유지
+        """시장 비중 조절 - 코스닥에 상한을 두고 나머지는 점수순으로 채운다
+
+        · 코스닥 상한: 약세·하락장 20% / 횡보 30% / 정상·상승 40% (최소 1자리는 허용)
+        · 앞 final_picks 개를 고르고, 밀려난 종목은 점수순으로 뒤에 붙여 돌려준다
+          (추적 종목 등록이 그 뒤쪽을 쓴다).
+
+        예전 구현의 문제 둘:
+        ① 코스닥 최소 1자리를 '강제'하고 코스피를 final_picks - 1 로 묶어서, 약세장
+           (추천 1개)에서는 코스피 자리가 0이 됐다. 코스닥 후보가 하나라도 있으면
+           점수가 더 높은 코스피를 제치고 코스닥이 뽑혔다 — 문서의 의도와 정반대.
+        ② 뉴스·갭 필터보다 앞에서 목록을 final_picks 개로 잘라, 뒤 필터가 뺀 자리를
+           채울 수 없었다. 2026-09-10 드라이런: 두 자리에 솔브레인·삼성전자만 남기고
+           SK하이닉스를 조용히 버린 뒤, 삼성전자가 뉴스 악재로 빠져 1종목만 추천됐다.
         """
         if not picks:
             return picks
 
-        # 시장별 분류
-        kospi  = [p for p in picks if p.get("market") == "KOSPI"]
-        kosdaq = [p for p in picks if p.get("market") == "KOSDAQ"]
-
         target = self.final_picks
-
-        # 국면 따라 코스닥 비중 결정
-        regime = self._get_regime()
-        regime_name = regime.get("regime", "sideways")
-
-        if regime_name in ["bear", "trending_down"]:
-            kosdaq_ratio = 0.2   # 약세장: 코스닥 20%
+        regime_name = self._get_regime().get("regime", "sideways")
+        if regime_name in ("bear", "trending_down"):
+            kosdaq_ratio = 0.2
         elif regime_name == "sideways":
-            kosdaq_ratio = 0.3   # 횡보장: 코스닥 30%
+            kosdaq_ratio = 0.3
         else:
-            kosdaq_ratio = 0.4   # 정상/상승: 코스닥 40%
-
+            kosdaq_ratio = 0.4
         max_kosdaq = max(1, round(target * kosdaq_ratio))
-        max_kospi  = target - max_kosdaq
 
-        # 점수 순으로 각 시장에서 max만큼 선택
-        kospi_sorted  = sorted(kospi,  key=lambda x: x.get("final_score", 0), reverse=True)
-        kosdaq_sorted = sorted(kosdaq, key=lambda x: x.get("final_score", 0), reverse=True)
+        by_score = sorted(picks, key=lambda x: x.get("final_score", 0), reverse=True)
+        selected, deferred, n_kosdaq = [], [], 0
+        for p in by_score:
+            if len(selected) >= target:
+                deferred.append(p)
+                continue
+            if p.get("market") == "KOSDAQ":
+                if n_kosdaq >= max_kosdaq:
+                    deferred.append(p)
+                    continue
+                n_kosdaq += 1
+            selected.append(p)
 
-        selected_kospi  = kospi_sorted[:max_kospi]
-        selected_kosdaq = kosdaq_sorted[:max_kosdaq]
+        # 코스닥 상한 때문에 자리가 남았는데 코스피 후보가 없으면 밀린 종목으로 채운다
+        if len(selected) < target and deferred:
+            fill = deferred[:target - len(selected)]
+            selected += fill
+            deferred = deferred[len(fill):]
 
-        # 부족분은 다른 시장에서 보충
-        result = selected_kospi + selected_kosdaq
-        if len(result) < target:
-            remaining = [p for p in picks if p not in result]
-            remaining.sort(key=lambda x: x.get("final_score", 0), reverse=True)
-            result += remaining[:target - len(result)]
-
-        # 최종 점수 순 정렬
-        result.sort(key=lambda x: x.get("final_score", 0), reverse=True)
-
-        kospi_n  = sum(1 for p in result if p.get("market") == "KOSPI")
-        kosdaq_n = sum(1 for p in result if p.get("market") == "KOSDAQ")
-        logger.info(
-            f"시장 비중 조절 ({regime_name}): "
-            f"코스피 {kospi_n}/{max_kospi}, 코스닥 {kosdaq_n}/{max_kosdaq}"
-        )
-        return result
+        bumped = [p for p in deferred if by_score.index(p) < target]
+        if bumped:
+            logger.info(
+                f"  시장 비중 조절({regime_name}, 코스닥 최대 {max_kosdaq}/{target}): "
+                f"{[p.get('name', '') for p in bumped]} 후순위로"
+            )
+        return selected + deferred
 
     def _apply_learned_rules(self):
         """[2단계] 시뮬레이션에서 학습된 규칙 적용"""

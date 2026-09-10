@@ -154,14 +154,21 @@ class DiscordNotifier:
 
         # 포지션 배분 요약
         position_summary = ""
-        if picks and picks[0].get("position_pct"):
+        # 전부 한도 초과(0%)여도 그 사실을 보여줘야 하므로 값이 아니라 키로 판단
+        if picks and "position_pct" in picks[0]:
             pos_lines = []
             for p in picks:
                 pos_lines.append(
                     f"{p.get('position_label', '')} **{p.get('name', '')}**: "
                     f"{p.get('position_pct', 0):.1f}%"
                 )
-            position_summary = "\n**📊 권장 배분:**\n" + "\n".join(pos_lines)
+            open_pct = picks[0].get("open_exposure_pct", 0)
+            note = ""
+            if open_pct:
+                new_pct = sum(p.get("position_pct", 0) for p in picks)
+                note = (f"\n_(이전 추천 보유분 {open_pct:.0f}% 반영 → "
+                        f"총 투입 {open_pct + new_pct:.0f}%)_")
+            position_summary = "\n**📊 권장 배분:**\n" + "\n".join(pos_lines) + note
 
         # 헤더 임베드
         header = {
