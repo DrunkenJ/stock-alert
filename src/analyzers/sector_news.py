@@ -39,8 +39,19 @@ SECTOR_KEYWORDS = {
 }
 
 
-def classify_sector(name: str, ticker: str = "") -> str:
-    """종목명으로 섹터 분류"""
+def classify_sector(name: str, ticker: str = "", krx_sector: str = "") -> str:
+    """섹터 분류
+
+    KRX 업종명(KIS 현재가 응답의 bstp_kor_isnm)을 우선한다. 아래 키워드 표는
+    대형주 이름 90개 남짓이라 중소형주가 전부 "기타"로 떨어졌고, 실제로
+    페이퍼 거래 105건 중 54%가 "기타"였다. 원익IPS·유진테크 같은 반도체
+    장비주가 서로 다른 종목인 양 취급되던 것도 이 때문이다.
+    (KRX 기준으로는 둘 다 "기계·장비"로 같은 업종이다)
+
+    ticker 인자는 예전부터 받기만 하고 쓰지 않았다. 시그니처 호환을 위해 남긴다.
+    """
+    if krx_sector:
+        return krx_sector
     for sector, keywords in SECTOR_KEYWORDS.items():
         if sector == "기타":
             continue
@@ -58,7 +69,8 @@ def filter_by_sector_diversity(picks: list[dict], max_per_sector: int = 2) -> li
     # 섹터 분류
     for pick in picks:
         pick["sector"] = classify_sector(
-            pick.get("name", ""), pick.get("ticker", "")
+            pick.get("name", ""), pick.get("ticker", ""),
+            pick.get("sector_krx", "")
         )
 
     # 섹터별 그룹화 (점수 높은 순 유지)

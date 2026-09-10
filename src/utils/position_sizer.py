@@ -10,8 +10,9 @@ from loguru import logger
 
 
 # 기본 파라미터
-MAX_POSITION_PCT = 40.0   # 종목당 최대 비중 (%)
-MIN_POSITION_PCT = 5.0    # 종목당 최소 비중 (%)
+# 상한을 100 으로 두면 예전처럼 '무조건 100% 배분' 동작으로 되돌아간다.
+MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "40"))
+MIN_POSITION_PCT = float(os.getenv("MIN_POSITION_PCT", "5"))
 SCORE_WEIGHT = 0.5        # 점수 가중 비율 (0~1, 나머지는 변동성역가중)
 VOL_WEIGHT = 0.5          # 변동성 역가중 비율
 
@@ -151,9 +152,11 @@ def _apply_constraints(raw_pcts: list[float], n: int) -> list[float]:
         if not changed:
             break
 
-    # 합계를 100%로 정규화
+    # 여기서 합계를 100%로 재정규화하면 방금 씌운 상한이 그대로 풀린다.
+    # (종목 1개면 40% → 100%, 2개면 40/40 → 50/50 이 되어 상한이 무의미했다)
+    # 상한에 걸려 남는 몫은 현금으로 두는 것이 "집중 리스크 방지"의 의미다.
     total = sum(pcts)
-    if total > 0:
+    if total > 100.0:
         pcts = [p / total * 100 for p in pcts]
 
     return pcts

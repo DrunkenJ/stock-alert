@@ -328,6 +328,18 @@ class StockScreener:
         if any(x in name for x in etf_keywords):
             return None
 
+        # ── 관리종목 / 시장경고 제외 ──────────────────────
+        # KIS 응답에 이미 실려 오는 플래그인데 여태 아무도 읽지 않았다.
+        # 거래정지·상장폐지로 갈 수 있는 종목이라 가격·시총 필터보다 앞에 둔다.
+        if price_data.get("is_managed"):
+            logger.debug(f"  [{ticker}] {name} 관리종목 - 제외")
+            return None
+        warn = str(price_data.get("market_warn", "00"))
+        if warn != "00":
+            label = {"01": "투자주의", "02": "투자경고", "03": "투자위험"}.get(warn, warn)
+            logger.debug(f"  [{ticker}] {name} {label} 지정 - 제외")
+            return None
+
         # ── 주가 필터 (저가주 제외) ───────────────────────
         min_price = int(os.getenv("MIN_STOCK_PRICE", "3000"))
         if price_data["price"] < min_price:
@@ -459,6 +471,8 @@ class StockScreener:
             "volume": price_data["volume"],
             "market_cap": price_data["market_cap"],
             "market": price_data.get("market") or self._detect_market(ticker),
+            # KRX 업종. sector_news.classify_sector 가 키워드 매칭보다 우선 사용한다.
+            "sector_krx": price_data.get("sector_krx", ""),
             "tech_score": tech_result["score"],
             "tech_signals": tech_result["signals"],
             "supply_score": supply_result["score"],

@@ -48,7 +48,7 @@ class TechnicalAnalyzer:
         if alignment_score >= 3:
             signals.append({"type": "positive", "name": "이동평균 정배열", "detail": f"5MA>{20}MA>{60}MA"})
 
-        # 골든크로스 체크 (최근 5일 내)
+        # 골든크로스 체크 (전일 대비 = 당일 교차만 감지)
         if len(df) >= 25:
             prev_ma5 = self._sma(df["close"].iloc[:-1], 5)
             prev_ma20 = self._sma(df["close"].iloc[:-1], 20)
@@ -58,7 +58,7 @@ class TechnicalAnalyzer:
 
         # ── RSI ──────────────────────────────────
         rsi = self._rsi(df["close"], 14)
-        if rsi:
+        if rsi is not None:
             if 40 <= rsi <= 60:
                 score += 1
                 signals.append({"type": "neutral", "name": "RSI 중립", "detail": f"RSI={rsi:.1f}"})
@@ -199,7 +199,7 @@ class TechnicalAnalyzer:
             "score": max(0, min(score, 15)),  # 0~15 정규화
             "signals": signals,
             "indicators": {
-                "rsi": round(rsi, 1) if rsi else None,
+                "rsi": round(rsi, 1) if rsi is not None else None,
                 "macd_hist": round(macd_result[2], 3) if macd_result else None,
                 "vol_ratio": round(vol_ratio, 1),
                 "ma5": round(ma5, 0) if ma5 else None,
@@ -226,14 +226,26 @@ class TechnicalAnalyzer:
         return series.rolling(period).mean().iloc[-1]
 
     def _rsi(self, series: pd.Series, period: int = 14) -> float | None:
+        """RSI (Wilder 지수평활)
+
+        단순이동평균으로 계산하던 것을 표준 방식으로 되돌렸다. 임계값 70/35 는
+        Wilder 기준 관행값인데 구현만 SMA 라 실측 최대 12.5p 까지 벌어졌다.
+
+        gain/loss 가 둘 다 0(완전 횡보)이면 RSI 는 NaN 이 된다. 그대로 흘리면
+        `if rsi:` 가 NaN 을 참으로 보고, 과매수 필터의 `rsi > 70` 도 False 라
+        측정 실패가 통과로 처리된다. None 으로 내보내 결측임을 분명히 한다.
+        """
         if len(series) < period + 1:
             return None
         delta = series.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi.iloc[-1]
+        gain = delta.where(delta > 0, 0.0)
+        loss = (-delta).where(delta < 0, 0.0)
+        avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+        if avg_loss.iloc[-1] == 0:
+            return 100.0 if avg_gain.iloc[-1] > 0 else None
+        rsi = 100 - (100 / (1 + avg_gain.iloc[-1] / avg_loss.iloc[-1]))
+        return float(rsi) if pd.notna(rsi) else None
 
     def _macd(self, series: pd.Series, fast=12, slow=26, signal=9):
         if len(series) < slow + signal:

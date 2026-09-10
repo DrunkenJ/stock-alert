@@ -111,7 +111,8 @@ class KISClient:
         )
         output = data["output"]
         # hts_kor_isnm이 없으면 stock_db에서 종목명 보완
-        # bstp_kor_isnm은 업종명이므로 사용 안 함
+        # (bstp_kor_isnm 은 종목명이 아니라 업종명이라 이름 보완에는 쓰지 않고,
+        #  아래에서 sector 로 따로 내보낸다)
         name = output.get("hts_kor_isnm", "").strip()
         if not name:
             try:
@@ -142,6 +143,11 @@ class KISClient:
             "pbr": float(output.get("pbr", 0)),
             "high_52w": int(output.get("w52_hgpr", 0)),
             "low_52w": int(output.get("w52_lwpr", 0)),
+            # KRX 업종 분류. 종목명 키워드 매칭보다 정확하고 추가 호출도 없다.
+            "sector_krx": output.get("bstp_kor_isnm", "").strip(),
+            # 관리종목 / 시장경고(00 정상, 01 주의, 02 경고, 03 위험)
+            "is_managed": output.get("mang_issu_cls_code", "N") == "Y",
+            "market_warn": output.get("mrkt_warn_cls_code", "00"),
         }
 
     def get_daily_ohlcv(self, ticker: str, days: int = 120) -> list[dict]:
