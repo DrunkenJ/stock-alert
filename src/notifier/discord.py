@@ -354,9 +354,11 @@ class DiscordNotifier:
                 "name": "🌊 수급 현황",
                 "value": (
                     f"외국인: {supply.get('foreign_net', 0):+,}주 "
-                    f"({supply.get('foreign_consecutive', 0)}일 연속)\n"
+                    f"({supply.get('sum_days', 5)}일 합산, "
+                    f"{supply.get('foreign_consecutive', 0)}일 연속)\n"
                     f"기관: {supply.get('inst_net', 0):+,}주 "
-                    f"({supply.get('inst_consecutive', 0)}일 연속)\n"
+                    f"({supply.get('sum_days', 5)}일 합산, "
+                    f"{supply.get('inst_consecutive', 0)}일 연속)\n"
                     f"{'✅ 동반매수' if supply.get('is_double_buy') else '⚠️ 단독매수'}"
                 ),
                 "inline": True,

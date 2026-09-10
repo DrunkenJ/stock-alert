@@ -103,9 +103,12 @@ class SurgeDetector:
                     continue
 
                 # 외국인/기관 수급 (당일)
+                # foreign_net 은 5일 누적이라 5분 주기 급등 감지에는 맞지 않는다.
+                # 며칠 전 매수가 남아 오늘의 매도를 가려버린다. 최신 행만 쓴다.
                 investor = kis_client.get_investor_trend(ticker, days=3)
-                foreign_net = investor.get("foreign_net", 0) if investor else 0
-                inst_net = investor.get("inst_net", 0) if investor else 0
+                _today_flow = (investor.get("detail") or [{}])[0] if investor else {}
+                foreign_net = _today_flow.get("foreign", 0)
+                inst_net = _today_flow.get("inst", 0)
 
                 # 신호 등록
                 signal = {

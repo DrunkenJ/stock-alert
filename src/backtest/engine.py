@@ -14,6 +14,7 @@ from loguru import logger
 from src.api.kis_client import KISClient
 from src.analyzers.technical import TechnicalAnalyzer
 from src.analyzers.supply_demand import SupplyDemandAnalyzer
+from src.api.kis_client import SUPPLY_SUM_DAYS
 
 
 class BacktestEngine:
@@ -59,11 +60,25 @@ class BacktestEngine:
         tickers = [t for t in tickers if not t.startswith("1")]  # ETF 제외
         return tickers
 
+    # 라이브 선정 단계 중 백테스트가 재현하지 못하는 것들.
+    # 결과를 읽을 때 "이만큼은 검증되지 않았다"를 알고 봐야 한다.
+    NOT_REPRODUCED = [
+        "관리종목·시장경고 제외 (과거 시점 플래그를 KIS 가 제공하지 않음)",
+        "갭 상승 매수 보류 (당시 시가/전일종가 기준 갭을 소급 판정 불가)",
+        "AI 최종 평가 게이트 (매 후보마다 GPT 호출 - 비용)",
+        "섹터 분산 필터 / 뉴스 감성 필터",
+        "포지션 사이징 (백테스트는 종목당 균등 가정)",
+    ]
+
     def run(self) -> dict:
         """백테스팅 실행"""
         logger.info("=" * 60)
         logger.info(f"백테스팅 시작: {self.start_date} ~ {self.end_date}")
         logger.info(f"유니버스: {len(self.universe)}종목 / 예상 시간: {len(self.universe) * 2 // 60}분")
+        logger.info("-" * 60)
+        logger.info("재현되지 않는 라이브 단계:")
+        for item in self.NOT_REPRODUCED:
+            logger.info(f"  · {item}")
         logger.info("=" * 60)
 
         logger.info("[1/3] 일봉 + 수급 데이터 수집 중...")
@@ -109,6 +124,17 @@ class BacktestEngine:
 
                 candle_by_date = {c["date"]: c for c in candles}
 
+                # 수급 점수는 시총 대비 비중으로 매겨진다(라이브와 동일 경로).
+                # 날짜별 시총은 없으므로 상장주식수를 구해 그날 종가로 환산한다.
+                shares = 0
+                try:
+                    _pd = self.kis.get_stock_price(ticker)
+                    if _pd.get("price"):
+                        shares = _pd.get("market_cap", 0) / _pd["price"]
+                    time.sleep(0.1)
+                except Exception as e:
+                    logger.debug(f"  [{ticker}] 시총 조회 실패 - 주식수 기준 폴백: {e}")
+
                 # 수급 데이터: 히스토리 우선, 없으면 API
                 investor_by_date = {}
 
@@ -135,6 +161,7 @@ class BacktestEngine:
 
                 result[ticker] = {
                     "candles": candles,
+                    "shares": shares,
                     "candle_by_date": candle_by_date,
                     "investor_by_date": investor_by_date,
                 }
@@ -213,35 +240,37 @@ class BacktestEngine:
                 if not investor_detail:
                     continue
 
-                foreign_net = sum(d["foreign"] for d in investor_detail[:5])
-                inst_net = sum(d["inst"] for d in investor_detail[:5])
+                def _streak(key: str) -> int:
+                    n = 0
+                    for d in investor_detail:
+                        if d[key] > 0:
+                            n += 1
+                        else:
+                            break
+                    return n
 
-                foreign_consec = 0
-                for d in investor_detail:
-                    if d["foreign"] > 0:
-                        foreign_consec += 1
-                    else:
-                        break
-
-                inst_consec = 0
-                for d in investor_detail:
-                    if d["inst"] > 0:
-                        inst_consec += 1
-                    else:
-                        break
-
-                # 간이 수급 점수
-                supply_score = 0
-                if foreign_net > 0:
-                    supply_score += 3 if foreign_net > 500000 else 1
-                if inst_net > 0:
-                    supply_score += 3 if inst_net > 300000 else 1
-                if foreign_net > 0 and inst_net > 0:
-                    supply_score += 3
-                if foreign_consec >= 3:
-                    supply_score += 2
-                if inst_consec >= 3:
-                    supply_score += 2
+                # 라이브와 같은 분석기를 쓴다. 예전에는 여기서 자체 '간이 점수'를
+                # 매겼는데(주식수 50만/30만 절대값, 연속 3일), 라이브는 시총 대비
+                # 0.5%/0.15% 에 연속 5일이라 서로 다른 것을 재고 있었다.
+                # 그 상태로는 수급 관련 변경을 백테스트로 검증할 수 없다.
+                _cur = data["candle_by_date"].get(date)
+                _price = _cur["close"] if _cur else 0
+                supply_result = self.sd.analyze(
+                    {
+                        "foreign_net": sum(d["foreign"] for d in investor_detail[:SUPPLY_SUM_DAYS]),
+                        "inst_net":    sum(d["inst"]    for d in investor_detail[:SUPPLY_SUM_DAYS]),
+                        "sum_days":    SUPPLY_SUM_DAYS,
+                        "foreign_consecutive": _streak("foreign"),
+                        "inst_consecutive":    _streak("inst"),
+                        "detail": investor_detail,
+                    },
+                    {
+                        "price": _price,
+                        "market_cap": data.get("shares", 0) * _price,
+                        "volume": _cur["volume"] if _cur else 0,
+                    },
+                )
+                supply_score = supply_result["score"]
 
                 total = tech_result["score"] * self.tech_weight + supply_score * self.supply_weight
 
@@ -554,6 +583,10 @@ class BacktestEngine:
             filename = f"backtest_{self.start_date}_{self.end_date}.json"
         path = Path("data") / filename
         path.parent.mkdir(exist_ok=True)
-        with open(path, "w") as f:
+        # 미재현 항목을 결과에 같이 실어야, 리포트만 따로 볼 때도
+        # 무엇이 검증되지 않았는지 알 수 있다.
+        result = {**result, "not_reproduced": self.NOT_REPRODUCED,
+                  "supply_sum_days": SUPPLY_SUM_DAYS}
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2, default=str)
         logger.info(f"백테스트 리포트 저장: {path}")
