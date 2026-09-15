@@ -374,7 +374,7 @@ class DiscordNotifier:
                 "name": "📈 기술 지표",
                 "value": (
                     f"RSI: {indicators.get('rsi', 'N/A')}\n"
-                    f"거래량: 평균 {indicators.get('vol_ratio', 0):.1f}배\n"
+                    f"거래량(직전 거래일): 평균 {format(indicators.get('vol_ratio'), '.1f') + '배' if indicators.get('vol_ratio') is not None else 'N/A'}\n"
                     f"시그널: {signal_text}"
                 ),
                 "inline": True,

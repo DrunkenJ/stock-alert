@@ -5,6 +5,7 @@
 """
 import numpy as np
 import pandas as pd
+from datetime import datetime
 from loguru import logger
 
 
@@ -93,14 +94,30 @@ class TechnicalAnalyzer:
                 signals.append({"type": "negative", "name": "볼린저밴드 상단 돌파", "detail": f"밴드 위치={bb_position:.1%}"})
 
         # ── 거래량 분석 ───────────────────────────
-        vol_ma20 = df["volume"].rolling(20).mean().iloc[-1]
-        cur_vol = df["volume"].iloc[-1]
-        vol_ratio = cur_vol / vol_ma20 if vol_ma20 > 0 else 0
+        # 거래량비는 '마지막 완성 캔들' 기준으로 잰다. KIS 일봉은 장중에도 오늘 행을
+        # 내려주는데 그 거래량은 개장 후 누적분이라, 09:10 스크리닝에서는 개장 10분치를
+        # 20일 평균(하루 전체)과 비교하고 있었다. 백테스트는 신호일 하루 전체로 계산하므로
+        # 같은 임계값으로 서로 다른 것을 쟀다. 오늘 행을 빼면 라이브는 전일, 백테스트는
+        # 신호일(그날 종가에 진입) 기준이 되어 '판단 시점의 마지막 완성 거래일'로 같아진다.
+        # 가격 지표(MA·RSI·현재가)는 장중 가격을 쓰는 게 의도라 그대로 둔다.
+        # ※ 2026-09-14 부터 일봉 거래량에 KRX 애프터마켓분이 영구히 더해진다(9/14 평균 +6.6%).
+        #    20일 평균이 새 기준으로 채워지는 약 20거래일 동안 거래량비가 그만큼 높게 나온다.
+        vol = df["volume"]
+        if str(candles[-1].get("date", "")) == datetime.now().strftime("%Y%m%d"):
+            vol = vol.iloc[:-1]
+        vol_ratio, vol_ratio_date = None, None
+        if len(vol) >= 20:
+            vol_ma20 = vol.iloc[-20:].mean()
+            if vol_ma20 > 0:
+                vol_ratio = float(vol.iloc[-1] / vol_ma20)
+                vol_ratio_date = candles[len(vol) - 1].get("date")
 
-        # 79건 실거래 검증: 거래량비가 낮을수록 성과가 좋았음
-        #   <1.0배 → 승률 68% / +0.35%,  2.0~4.0배 → 승률 44% / -4.17%
-        # 거래량 급증일 매수 = 관심 집중 후 단기 반전 구간 매수. 가점이 아니라 감점 대상.
-        if vol_ratio >= 4.0:
+        # 임계값 근거로 적혀 있던 "79건 실거래 검증"(<1.0배 승률 68%, 2.0~4.0배 -4.17%)은
+        # 신뢰할 수 없는 7월 이전 페이퍼 원장에서 나왔고, 그때 기록된 거래량비도 개장 10분치
+        # 기준이었다. '거래량 급증일 매수 = 단기 반전 구간 매수'라는 방향만 유지한다.
+        if vol_ratio is None:
+            pass
+        elif vol_ratio >= 4.0:
             score -= 2
             signals.append({"type": "negative", "name": "거래량 폭증", "detail": f"평균 대비 {vol_ratio:.1f}배 (소진/상투 위험)"})
         elif vol_ratio >= 2.0:
@@ -201,7 +218,8 @@ class TechnicalAnalyzer:
             "indicators": {
                 "rsi": round(rsi, 1) if rsi is not None else None,
                 "macd_hist": round(macd_result[2], 3) if macd_result else None,
-                "vol_ratio": round(vol_ratio, 1),
+                "vol_ratio": round(vol_ratio, 1) if vol_ratio is not None else None,
+                "vol_ratio_date": vol_ratio_date,   # 거래량비를 잰 완성 캔들 날짜
                 "ma5": round(ma5, 0) if ma5 else None,
                 "ma20": round(ma20, 0) if ma20 else None,
                 "bb_position": round(bb_position, 3) if bb_result else None,

@@ -94,7 +94,7 @@ class AIEvaluator:
             f"점수: 종합 {s.get('total_score', 0):.1f}점 | 신뢰도: {score_confidence}\n"
             f"기술적 분석 점수: {s['tech_score']}/15\n"
             f"- RSI: {s['indicators'].get('rsi', 'N/A')}\n"
-            f"- 거래량 배율: {s['indicators'].get('vol_ratio', 'N/A')}배\n"
+            f"- 거래량 배율(직전 거래일): {s['indicators'].get('vol_ratio') if s['indicators'].get('vol_ratio') is not None else 'N/A'}배\n"
             f"- 신호: {signals_str}\n"
             f"수급 분석 점수: {s['supply_score']}/15\n"
             f"- 외국인 5일: {s['supply_summary']['foreign_net']:+,}주\n"
@@ -130,7 +130,7 @@ class AIEvaluator:
             f"추천: {analysis.get('recommendation')} (확신도: {analysis.get('confidence')}%)\n"
             f"매수 근거: {analysis.get('bull_case')}\n"
             f"RSI: {s['indicators'].get('rsi', 'N/A')}\n"
-            f"거래량 배율: {s['indicators'].get('vol_ratio', 'N/A')}배\n"
+            f"거래량 배율(직전 거래일): {s['indicators'].get('vol_ratio') if s['indicators'].get('vol_ratio') is not None else 'N/A'}배\n"
             f"수급패턴: {s.get('supply_pattern', {}).get('pattern', '일반')}\n\n"
             f"다음 JSON으로만 응답:\n"
             f'{{"risk_level":"high|medium|low",'

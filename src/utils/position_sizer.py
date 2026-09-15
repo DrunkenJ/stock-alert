@@ -55,7 +55,8 @@ def calculate_position_sizes(picks: list[dict], open_exposure_pct: float = 0.0) 
     vol_ratios = []
     for p in picks:
         indicators = p.get("indicators", {})
-        vol_ratio = indicators.get("vol_ratio", 1.0)
+        # 완성 캔들이 20개 미만이면 거래량비가 None 으로 온다
+        vol_ratio = indicators.get("vol_ratio") or 1.0
         price = p.get("price", 0)
 
         # 가격대별 기본 변동성 추정 (소형주일수록 변동성 큼)

@@ -190,9 +190,9 @@ def build_analysis_embed(stock: dict) -> discord.Embed:
         name="📈 기술 지표",
         value=(
             f"RSI: {indicators.get('rsi', 'N/A')}\n"
-            f"거래량: 평균 대비 {indicators.get('vol_ratio', 0):.1f}배\n"
+            f"거래량(직전 거래일): 평균 대비 {format(indicators.get('vol_ratio'), '.1f') + '배' if indicators.get('vol_ratio') is not None else 'N/A'}\n"
             f"20MA: {indicators.get('ma20', 'N/A'):,}원" if indicators.get('ma20') else
-            f"RSI: {indicators.get('rsi', 'N/A')}\n거래량: 평균 대비 {indicators.get('vol_ratio', 0):.1f}배"
+            f"RSI: {indicators.get('rsi', 'N/A')}\n거래량(직전 거래일): 평균 대비 {format(indicators.get('vol_ratio'), '.1f') + '배' if indicators.get('vol_ratio') is not None else 'N/A'}"
         ),
         inline=True,
     )
