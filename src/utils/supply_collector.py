@@ -162,7 +162,11 @@ def collect_daily_supply(top_n: int = 300, backfill: bool = True) -> dict:
     for date, data in sorted(by_date.items()):
         existing = _load_supply(date)
         merged = existing.get("data", {})
-        merged.update(data)
+        # 종목 레코드를 통째로 바꾸지 않고 필드 단위로 갱신한다. 백필 행에는 수급 필드만
+        # 있어서, 예전처럼 통째로 바꾸면 그날 저장해 둔 가격·거래량·5일 합산·연속일이
+        # 다음 날 사라졌다(9/10 파일: 375종목 중 38종목만 가격 필드가 남아 있었다).
+        for tk, rec in data.items():
+            merged.setdefault(tk, {}).update(rec)
         with open(SUPPLY_DIR / f"{date}.json", "w", encoding="utf-8") as f:
             json.dump({
                 "date": date,

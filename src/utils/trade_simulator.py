@@ -170,8 +170,8 @@ class TradeSimulator:
             if days_held >= MAX_HOLD_DAYS:
                 # 마감일 강제 청산
                 try:
-                    # 이 잡은 애프터마켓이 끝난 뒤(20:10)에 돈다. 현재가는 저녁 마지막
-                    # 체결가일 수 있으므로 정규장 공식 종가로 청산한다.
+                    # 정규장 공식 종가로 청산한다. 이 잡은 15:45 에 도므로 일봉 종가가
+                    # 아직 애프터마켓 체결에 오염되지 않았다.
                     oc = kis_client.get_official_close(ticker)
                     price = oc["close"] if oc else kis_client.get_stock_price(ticker)["price"]
                     remaining = 1.0 - (PARTIAL_1_RATIO if trade["partial_1_done"] else 0) \

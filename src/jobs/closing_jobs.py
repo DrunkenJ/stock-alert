@@ -1,7 +1,8 @@
-"""장 마감 후 잡 (15:35 종가손절 / 16:00 요약 / 20:05 수급 / 20:10 시뮬 / 금 20:20 리뷰)
+"""장 마감 후 잡 (15:35 종가손절 / 15:45 시뮬 / 15:46 브레드스 / 15:50 요약 / 20:05 수급 / 금 20:20 리뷰)
 
-수집·시뮬 잡은 KRX 애프터마켓(2026-09-14~, 16:00~20:00)이 끝난 뒤에 돈다. 장후 체결이
-거래량과 투자자 수급에 더해지므로(2026-09-10 실측) 16시대에 읽으면 미확정 값이다.
+가격을 판정에 쓰는 잡은 KRX 애프터마켓(2026-09-14~, 16:00~20:00) 개장 전에 돈다. 16:00 이후
+KIS 일봉 고가·저가·종가에 애프터마켓 체결이 임시로 섞이기 때문이다(9/14 실측, 다음 날 원복).
+수급은 저녁 내내 정규장 값 그대로였다가 밤사이 확정되므로 수집 시각과 무관하게 다음 날 백필이 바로잡는다.
 
 main.py 에서 옮겨왔다. 등록과 실행 순서는 main.setup_schedule 이 계속 관장한다.
 """
@@ -50,7 +51,7 @@ def run_closing_stop_check():
 
 
 def run_simulation_update():
-    """20:10 시뮬레이션 진행 업데이트 (애프터마켓 종료 후 확정 일봉 기준)"""
+    """15:45 시뮬레이션 진행 업데이트 (정규장 확정 일봉, 애프터마켓 개장 전)"""
     from src.api.kis_client import KISClient
     kis = KISClient()
     try:
@@ -107,7 +108,7 @@ def run_simulation_update():
 
 
 def run_closing_summary():
-    """16:00 마감 요약 (정규장 종가 기준)"""
+    """15:50 마감 요약 (정규장 종가 기준, 애프터마켓 개장 전)"""
     if not _sync_today_picks():
         return
 
@@ -115,8 +116,8 @@ def run_closing_summary():
     kis = KISClient()
     notifier = DiscordNotifier()
 
-    # 종가는 '현재가'가 아니라 일봉의 공식 종가로 읽는다. 16:00 은 KRX 애프터마켓
-    # (2026-09-14~) 개장 시각이라, 스케줄러가 몇 초만 늦어도 현재가가 저녁 첫 체결가일 수 있다.
+    # 종가는 일봉에서 읽고, 애프터마켓(16:00) 개장 전에 읽는다. 16:00 이후엔 현재가뿐 아니라
+    # 일봉 종가에도 저녁 체결가가 임시로 섞인다(2026-09-14 실측).
     # (예전에는 같은 종목의 현재가를 알림용·저장용으로 두 번씩 조회했다)
     results = []
     for pick in _sync_today_picks():
@@ -140,7 +141,11 @@ def run_closing_summary():
 
 
 def run_supply_collection():
-    """20:05 일별 수급 데이터 자동 수집 (애프터마켓 종료 후 확정 수급)"""
+    """20:05 일별 수급 데이터 자동 수집
+
+    당일 수급은 몇 시에 모아도 미확정이다(저녁 내내 정규장 값 → 밤사이 확정). 다음 날
+    수집이 30일 백필로 전일 행을 확정값으로 덮어써 바로잡는다.
+    """
     try:
         from src.utils.supply_collector import collect_daily_supply
         logger.info("일별 수급 데이터 수집 시작")
@@ -152,13 +157,6 @@ def run_supply_collection():
         )
         count = result.get("count", 0)
         logger.info(f"수급 데이터 수집 완료: {count}종목")
-
-        # 다음 날 아침 브레드스 게이트가 쓸 전 유니버스 브레드스 (전일 종가 기준)
-        try:
-            from src.utils.market_breadth import compute_universe_breadth
-            compute_universe_breadth()
-        except Exception as e:
-            logger.warning(f"전 유니버스 브레드스 산출 실패 - 내일은 후보 풀 기준으로 대체: {e}")
 
         # Discord 알림 (간단히)
         notifier = DiscordNotifier()
@@ -240,3 +238,15 @@ def run_aftermarket_compare():
         compare("close", "evening")
     except Exception as e:
         logger.warning(f"애프터마켓 점검 비교 실패: {e}")
+
+
+def run_universe_breadth():
+    """15:46 전 유니버스 브레드스 산출 - 다음 날 아침 게이트용 (정규장 종가, 애프터마켓 개장 전)
+
+    예전에는 20:05 수급 수집 뒤에 붙어 있어서 저녁 체결가가 섞인 종가로 계산됐다.
+    """
+    try:
+        from src.utils.market_breadth import compute_universe_breadth
+        compute_universe_breadth()
+    except Exception as e:
+        logger.warning(f"전 유니버스 브레드스 산출 실패 - 내일은 후보 풀 기준으로 대체: {e}")

@@ -52,10 +52,13 @@ trading day: `06:30` US market close data → `07:00` overnight news scan → `0
 analysis → `09:05` stock DB rebuild → `09:07` macro judgment (risk-on/off) → `09:10` morning
 screening + picks (the main event) → `13:00` afternoon supplementary screening → every
 `interval` (default 30) min: realtime target/stop/trailing checks + watchlist timing checks
-→ every 5 min: surge detection → `15:35` closing stop-loss check → `15:40` after-market check snapshot → `16:00`
-closing summary (regular-session close) → `20:02` after-market check compare → `20:05` supply/demand
-data collection + universe breadth → `20:10` simulation P&L update → Friday `20:20` weekly
+→ every 5 min: surge detection → `15:35` closing stop-loss check → `15:40` after-market check snapshot →
+`15:45` simulation P&L update → `15:46` universe breadth → `15:50` closing summary → `20:02`
+after-market check compare → `20:05` supply/demand data collection → Friday `20:20` weekly
 review + strategy learning.
+
+Anything that judges on daily high/low/close runs before 16:00: from 2026-09-14 the KRX
+after-market (16:00-20:00) prints leak into KIS's same-day candle until the next day.
 
 The job bodies live in `src/jobs/` (premarket / screening / intraday / closing); `main.py`
 only registers them and runs the loop. State shared across jobs within one process run

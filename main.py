@@ -49,7 +49,7 @@ from src.jobs.intraday_jobs import (
 from src.jobs.closing_jobs import (
     run_closing_stop_check, run_simulation_update, run_closing_summary,
     run_supply_collection, run_weekly_review_auto,
-    run_aftermarket_snapshot, run_aftermarket_compare,
+    run_aftermarket_snapshot, run_aftermarket_compare, run_universe_breadth,
 )
 
 load_dotenv()
@@ -71,13 +71,18 @@ from src.utils.session_state import (
 
 def setup_schedule():
     morning = os.getenv("SCHEDULE_MORNING", "09:10")
-    close = os.getenv("SCHEDULE_CLOSE", "16:00")
+    close = os.getenv("SCHEDULE_CLOSE", "15:50")
     interval = int(os.getenv("SCHEDULE_REALTIME_INTERVAL", "30"))
-    # 확정 데이터를 읽는 장후 잡은 KRX 애프터마켓(2026-09-14~, 16:00~20:00)이 끝난 뒤에
-    # 돈다. 장후 체결이 거래량·투자자 수급에 더해지므로(2026-09-10 실측) 16시대에
-    # 읽으면 미확정 값이다. 16:00 장후 요약은 정규장 요약이라 그대로 둔다.
+    # KRX 애프터마켓(2026-09-14~, 16:00~20:00) 실측 결과:
+    #  · 가격(고가·저가·종가): 16:00 이후 KIS 일봉에 애프터마켓 체결이 '임시로' 섞였다가
+    #    다음 날 정규장 값으로 되돌아간다. 15:40 에 읽은 값은 최종 기록과 같다.
+    #    → 가격을 판정에 쓰는 잡(시뮬·브레드스·장후 요약)은 애프터마켓 개장 전에 돈다.
+    #    (20:10 에 돌던 시뮬이 9/14 삼성전자우를 저녁 저가로 잘못 손절했다)
+    #  · 투자자 수급: 저녁 동안 15:40 값 그대로였다가 밤사이 확정된다. 몇 시에 모아도
+    #    당일 값은 미확정이고 다음 날 백필이 바로잡으므로, 수급 수집은 저녁에 둔다.
     supply_at = os.getenv("SCHEDULE_SUPPLY", "20:05")
-    sim_at = os.getenv("SCHEDULE_SIM_UPDATE", "20:10")
+    sim_at = os.getenv("SCHEDULE_SIM_UPDATE", "15:45")
+    breadth_at = os.getenv("SCHEDULE_BREADTH", "15:46")
     weekly_at = os.getenv("SCHEDULE_WEEKLY", "20:20")
 
     for day in ["monday", "tuesday", "wednesday", "thursday", "friday"]:
@@ -96,12 +101,13 @@ def setup_schedule():
     for day in ["monday", "tuesday", "wednesday", "thursday", "friday"]:
         getattr(schedule.every(), day).at(supply_at).do(run_supply_collection)
         getattr(schedule.every(), day).at(sim_at).do(run_simulation_update)
+        getattr(schedule.every(), day).at(breadth_at).do(run_universe_breadth)
         # 애프터마켓이 KRX 일봉·수급에 어떻게 반영되는지 매일 점검 (정규장 확정 직후 vs 종료 직후)
         getattr(schedule.every(), day).at("15:40").do(run_aftermarket_snapshot)
         getattr(schedule.every(), day).at("20:02").do(run_aftermarket_compare)
         getattr(schedule.every(), day).at("13:00").do(run_afternoon_screening)
         getattr(schedule.every(), day).at("15:35").do(run_closing_stop_check)
-    logger.info(f"스케줄 등록: 미국마감=06:30, 야간뉴스=07:00, 프리장=08:40, DB갱신=09:05, 거시판단=09:07, 장전={morning}, 보조스크리닝=13:00, 종가손절=15:35, 장후={close}, 애프터마켓점검=15:40/20:02, 수급수집={supply_at}, 시뮬={sim_at}, 장중={interval}분, 주간리뷰=금{weekly_at}")
+    logger.info(f"스케줄 등록: 미국마감=06:30, 야간뉴스=07:00, 프리장=08:40, DB갱신=09:05, 거시판단=09:07, 장전={morning}, 보조스크리닝=13:00, 종가손절=15:35, 애프터마켓점검=15:40/20:02, 시뮬={sim_at}, 브레드스={breadth_at}, 장후={close}, 수급수집={supply_at}, 장중={interval}분, 주간리뷰=금{weekly_at}")
 
 
 def handle_shutdown(signum, frame):
