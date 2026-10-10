@@ -65,8 +65,20 @@ if ATR_EXIT_MODE:
     PARTIAL_1_RATIO = float(os.getenv("ATR_P1_RATIO", "0.33"))
     PARTIAL_2_RATIO = float(os.getenv("ATR_P2_RATIO", "0.33"))
 else:
-    PARTIAL_1_RATIO = 0.5
-    PARTIAL_2_RATIO = 0.3
+    # 고정 모드 분할 비율. 기본값은 현행 동작(50%/30%) 그대로다.
+    # 2026-10-09 청산 스윕(2026-07~10, 35거래): 이 둘을 0 으로 두면 전량을
+    # 본전손절+트레일링으로 관리하게 되는데, 같은 거래에서 거래당 +0.65%p
+    # (95%CI +0.08~+1.37, 개선 12 / 악화 3), 평균이익 +4.88%→+7.10%,
+    # 손익분기 승률 52.6%→40.9% 로 유일하게 기대값 부호가 뒤집혔다.
+    # 분할 익절이 상승분을 잘라내는 쪽으로 작동하고 있어 중간값을 시험할 수 있게 뺀다.
+    PARTIAL_1_RATIO = float(os.getenv("FIXED_P1_RATIO", "0.5"))
+    PARTIAL_2_RATIO = float(os.getenv("FIXED_P2_RATIO", "0.3"))
+
+# 합이 1을 넘으면 잔량이 음수가 되어 청산 손익 계산이 뒤집힌다
+if PARTIAL_1_RATIO + PARTIAL_2_RATIO > 1.0:
+    _total = PARTIAL_1_RATIO + PARTIAL_2_RATIO
+    PARTIAL_1_RATIO /= _total
+    PARTIAL_2_RATIO /= _total
 
 
 def stop_cap_pct() -> float:
