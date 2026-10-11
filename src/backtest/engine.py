@@ -452,6 +452,41 @@ class BacktestEngine:
         if entry_price <= 0:
             return None
 
+        # ── 진입 방식 ────────────────────────────────────
+        # 라이브는 09:10 에 split_1st 지정가로 걸고, 닿지 않으면 거래가 성립하지
+        # 않는다(2026-09 체결 확인 도입). 백테스트는 익일 시가에 무조건 진입해 왔고,
+        # 그래서 "진입 직후 바로 역주행하는 거래"가 라이브보다 많이 잡힌다.
+        # BACKTEST_ENTRY=limit 이면 라이브와 같은 지정가·체결 판정을 쓴다.
+        # (호가 단위 반올림은 생략한다 - 할인폭 대비 영향이 작다)
+        if os.getenv("BACKTEST_ENTRY", "open").lower() == "limit":
+            from src.utils.entry_calculator import (
+                LIMIT_ORDER_DISC, GAP_REJECT_PCT, _classify_gap,
+            )
+            self._entry_stats = getattr(self, "_entry_stats", {})
+            prev_close = candle_by_date[trading_dates[start_idx]]["close"]
+            gap_pct = (entry_candle["open"] - prev_close) / prev_close * 100 if prev_close else 0.0
+            gap_status = _classify_gap(gap_pct)
+
+            # 갭 7%+ 는 라이브에서 추천 자체를 보류한다(acac626)
+            if gap_status == "reject" and os.getenv("BACKTEST_GAP_SKIP", "1") != "0":
+                self._entry_stats["갭보류"] = self._entry_stats.get("갭보류", 0) + 1
+                return None
+
+            if gap_status == "warning":
+                base, disc = entry_candle["open"], LIMIT_ORDER_DISC * 1.5
+            elif gap_status == "reject":
+                base, disc = prev_close, LIMIT_ORDER_DISC * 2
+            else:
+                base, disc = entry_candle["open"], LIMIT_ORDER_DISC
+            disc = float(os.getenv("BACKTEST_LIMIT_DISC", str(disc)))
+            limit = base * (1 - disc)
+
+            if entry_candle["low"] > limit:
+                self._entry_stats["미체결"] = self._entry_stats.get("미체결", 0) + 1
+                return None
+            self._entry_stats["체결"] = self._entry_stats.get("체결", 0) + 1
+            entry_price = int(limit)
+
         # ── 진입 시점의 손절/익절 (실전 entry_calculator 와 동일 규칙) ──
         # 예전에는 여기서 고정 -3%/+6% 를 썼다. 분할 익절·트레일링·본전 상향이
         # 전부 빠져 있어서 백테스트가 실제 청산 전략을 전혀 재현하지 못했고,
