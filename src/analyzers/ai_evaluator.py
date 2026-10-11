@@ -52,9 +52,15 @@ class AIEvaluator:
             final = self._validate_prices(stock_info["price"], final)
             final["_analyst"] = analysis
             final["_risk"]    = risk_review
+            from src.utils.ai_health import record_success
+            record_success("종목 AI 평가")
             return final
         except Exception as e:
+            # 예외를 삼키고 _fallback 을 돌려주므로, 바깥에서는 'AI가 죽었다'와
+            # 'AI가 관망 판정했다'가 구별되지 않는다. 그래서 여기서 알린다.
             logger.error(f"AI 평가 오류 ({stock_info.get('name', '')}): {e}")
+            from src.utils.ai_health import record_failure
+            record_failure("종목 AI 평가", e)
             return self._fallback(stock_info)
 
     def generate_market_summary(self, picks: list, regime: str = "") -> str:
@@ -79,6 +85,8 @@ class AIEvaluator:
             return resp.choices[0].message.content.strip()
         except Exception as e:
             logger.error(f"시황 요약 오류: {e}")
+            from src.utils.ai_health import record_failure
+            record_failure("시황 요약", e)
             return f"외국인/기관 수급 중심 {', '.join(names[:3])} 주목"
 
     def _run_analyst(self, s: dict) -> dict:

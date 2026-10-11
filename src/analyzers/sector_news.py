@@ -185,6 +185,8 @@ def analyze_news_sentiment(name: str, ticker: str,
         return result
     except Exception as e:
         logger.debug(f"감성분석 GPT 오류 ({name}): {e}")
+        from src.utils.ai_health import record_failure
+        record_failure("뉴스 감성 분석", e)
         return {
             "sentiment": "neutral",
             "score_adj": 0,

@@ -156,10 +156,14 @@ class MacroAgent:
             result["top_news"]    = news[:5]
             logger.info(f"거시 판단: {result.get('judgment')} / VIX={market_data.get('VIX',{}).get('value','N/A')} / 확신도={result.get('confidence')}%")
             self._save_market_data_cache(market_data)
+            from src.utils.ai_health import record_success
+            record_success("거시 판단")
             return result
 
         except Exception as e:
             logger.error(f"거시 판단 GPT 오류: {e}")
+            from src.utils.ai_health import record_failure
+            record_failure("거시 판단", e)
             return self._neutral_result(str(e))
 
     def _save_market_data_cache(self, market_data: dict):
